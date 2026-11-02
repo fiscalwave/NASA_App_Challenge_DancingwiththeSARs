@@ -509,8 +509,9 @@
                     type="text"
                     id="voiceInput"
                     class="search-input"
-                    placeholder="Say or type: 'Search Scenes for Location: {name}, Radius: {km}, TimeInterval {start} till {end}'"
+                    placeholder="Click the microphone to start: Step 1 - Say Location, Step 2 - Say Radius, Step 3 - Say Start Date, Step 4 - Say End Date"
                     spellcheck="false"
+                    readonly
                 />
                 <div class="search-controls">
                     <button id="micButton" class="mic-btn" title="Click to speak">
@@ -715,10 +716,12 @@
             `;
         }
 
-        // Voice recognition
+        // Voice recognition with step-by-step flow
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition;
         let isListening = false;
+        let voiceStep = null; // 'location', 'radius', 'startDate', 'endDate', or null
+        let voiceData = {}; // Store data collected from voice
 
         if (SpeechRecognition) {
             recognition = new SpeechRecognition();
@@ -732,7 +735,10 @@
                     isListening = false;
                     document.getElementById('micButton').classList.remove('listening');
                 } else {
-                    document.getElementById('voiceInput').value = '';
+                    // Start the step-by-step voice flow
+                    voiceStep = 'location';
+                    voiceData = {};
+                    document.getElementById('voiceInput').value = '🎤 Listening... Please say your location (e.g., "Venice Italy" or "45.4408, 12.3155")';
                     isListening = true;
                     document.getElementById('micButton').classList.add('listening');
                     recognition.start();
@@ -744,97 +750,90 @@
                 for (let i = event.resultIndex; i < event.results.length; i++) {
                     transcript += event.results[i][0].transcript;
                 }
-                document.getElementById('voiceInput').value = transcript;
 
+                // Display what's being captured
+                if (voiceStep === 'location') {
+                    document.getElementById('voiceInput').value = '📍 Location: ' + transcript;
+                } else if (voiceStep === 'radius') {
+                    document.getElementById('voiceInput').value = '📏 Radius: ' + transcript + ' km';
+                } else if (voiceStep === 'startDate') {
+                    document.getElementById('voiceInput').value = '📅 Start Date: ' + transcript;
+                } else if (voiceStep === 'endDate') {
+                    document.getElementById('voiceInput').value = '📅 End Date: ' + transcript;
+                }
+
+                // When user stops speaking (isFinal = true)
                 if (event.results[event.results.length - 1].isFinal) {
                     setTimeout(() => {
-                        parseVoiceCommand(transcript);
+                        processVoiceStep(transcript);
                     }, 300);
                 }
             };
 
             recognition.onend = () => {
-                document.getElementById('micButton').classList.remove('listening');
-                isListening = false;
+                if (voiceStep) {
+                    document.getElementById('micButton').classList.add('listening');
+                    recognition.start(); // Continue listening for next step
+                } else {
+                    document.getElementById('micButton').classList.remove('listening');
+                    isListening = false;
+                }
             };
         }
 
-        // Parse voice command with enhanced structured format support
-        function parseVoiceCommand(text) {
-            text = text.toLowerCase().trim();
-            let hasChanges = false;
+        // Process each voice step
+        function processVoiceStep(transcript) {
+            transcript = transcript.trim().toLowerCase();
 
-            // Match structured format: "Search Scenes for Location: {location}, Radius: {radius} km, TimeInterval {start} till {end}"
-            const structuredMatch = text.match(
-                /search\s+scenes?\s+for\s+location\s*:\s*([^,]+),\s*radius\s*:\s*(\d+)\s*(?:km)?\s*,?\s*time\s*interval\s*:?\s*([^\s]+)\s+till\s+(.+)/i
-            );
-
-            if (structuredMatch) {
-                const location = structuredMatch[1].trim();
-                const radius = Math.max(5, Math.min(100, parseInt(structuredMatch[2])));
-                const startDateStr = structuredMatch[3].trim();
-                const endDateStr = structuredMatch[4].trim();
-
-                document.getElementById('locationInput').value = location;
-                document.getElementById('radiusInput').value = radius;
-                document.getElementById('startDate').value = parseDate(startDateStr);
-                document.getElementById('endDate').value = parseDate(endDateStr);
-                hasChanges = true;
-            } else {
-                // Fallback to flexible parsing
-                let location = '';
-
-                // Extract location (coordinates or place name)
-                const coordMatch = text.match(/(\d+\.?\d*)\s*,\s*(\d+\.?\d*)/);
-                if (coordMatch) {
-                    location = `${coordMatch[1]}, ${coordMatch[2]}`;
-                } else {
-                    const locationMatch = text.match(/(?:location|place|search|for)\s*:?\s*([^,]+?)(?:\s+(?:with|radius|for|from|\d|at|time))/i);
-                    if (locationMatch) {
-                        location = locationMatch[1].replace(/radius|km|with|from|for|at|location/gi, '').trim();
-                    }
-                }
-
-                // Extract radius
-                const radiusMatch = text.match(/(?:radius|search)\s*:?\s*(\d+)\s*(?:km|kilometer)?/i);
-                if (radiusMatch) {
-                    document.getElementById('radiusInput').value = Math.max(5, Math.min(100, parseInt(radiusMatch[1])));
-                    hasChanges = true;
-                }
-
-                // Extract dates
-                const datePatterns = [
-                    /(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d+/gi,
-                    /\d{4}-\d{2}-\d{2}/g,
-                    /\d{1,2}[-/]\d{1,2}[-/]\d{2,4}/g
-                ];
-                const dates = [];
-                for (let pattern of datePatterns) {
-                    const matches = text.match(pattern);
-                    if (matches) dates.push(...matches);
-                }
-
-                if (location) {
-                    document.getElementById('locationInput').value = location;
-                    hasChanges = true;
-                }
-
-                if (dates.length >= 2) {
-                    document.getElementById('startDate').value = parseDate(dates[0]);
-                    document.getElementById('endDate').value = parseDate(dates[1]);
-                    hasChanges = true;
-                }
+            if (voiceStep === 'location') {
+                voiceData.location = transcript;
+                document.getElementById('locationInput').value = transcript;
+                
+                // Move to next step
+                voiceStep = 'radius';
+                document.getElementById('voiceInput').value = '🎤 Listening... Please say the search radius in kilometers (e.g., "15" or "20 kilometers")';
+                recognition.start();
             }
-
-            if (hasChanges) {
-                const locationInput = document.getElementById('locationInput').value;
-                if (locationInput) {
-                    setTimeout(() => geocodeLocation(), 100);
+            else if (voiceStep === 'radius') {
+                const radiusMatch = transcript.match(/(\d+)/);
+                if (radiusMatch) {
+                    voiceData.radius = Math.max(5, Math.min(100, parseInt(radiusMatch[1])));
+                    document.getElementById('radiusInput').value = voiceData.radius;
                 }
-
+                
+                // Move to next step
+                voiceStep = 'startDate';
+                document.getElementById('voiceInput').value = '🎤 Listening... Please say the start date (e.g., "January 15 2025" or "2025-01-15")';
+                recognition.start();
+            }
+            else if (voiceStep === 'startDate') {
+                voiceData.startDate = transcript;
+                document.getElementById('startDate').value = parseDate(transcript);
+                
+                // Move to next step
+                voiceStep = 'endDate';
+                document.getElementById('voiceInput').value = '🎤 Listening... Please say the end date (e.g., "February 15 2025" or "2025-02-15")';
+                recognition.start();
+            }
+            else if (voiceStep === 'endDate') {
+                voiceData.endDate = transcript;
+                document.getElementById('endDate').value = parseDate(transcript);
+                
+                // All steps complete - show summary and search
+                voiceStep = null;
+                document.getElementById('voiceInput').value = `✅ Search Parameters Set:\n📍 ${voiceData.location}\n📏 ${voiceData.radius} km\n📅 ${document.getElementById('startDate').value} to ${document.getElementById('endDate').value}\n\n🔍 Searching...`;
+                
+                document.getElementById('micButton').classList.remove('listening');
+                isListening = false;
+                
+                // Geocode and search
+                setTimeout(() => {
+                    geocodeLocation();
+                }, 500);
+                
                 setTimeout(() => {
                     document.getElementById('searchBtn').click();
-                }, 500);
+                }, 1000);
             }
         }
 
