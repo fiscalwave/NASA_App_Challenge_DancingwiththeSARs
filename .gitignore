@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.py[cod]
+.streamlit/secrets.toml
+data/scenes/*.h5
+data/scenes/*.hdf5

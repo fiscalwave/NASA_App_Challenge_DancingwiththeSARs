@@ -6,6 +6,7 @@
     <title>NISAR Flood & Wetland Mapping</title>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -159,6 +160,11 @@
             flex-shrink: 0;
             border-radius: 50%;
             color: #38bdf8;
+        }
+
+        .mic-btn .material-icons, .reset-btn .material-icons {
+            font-size: 24px;
+            line-height: 1;
         }
 
         .mic-btn:hover, .reset-btn:hover {
@@ -507,8 +513,12 @@
                     spellcheck="false"
                 />
                 <div class="search-controls">
-                    <button id="micButton" class="mic-btn" title="Click to speak">🎤</button>
-                    <button id="resetButton" class="reset-btn" title="Reset all fields">↻</button>
+                    <button id="micButton" class="mic-btn" title="Click to speak">
+                        <span class="material-icons">mic</span>
+                    </button>
+                    <button id="resetButton" class="reset-btn" title="Reset all fields">
+                        <span class="material-icons">refresh</span>
+                    </button>
                 </div>
             </div>
         </div>
@@ -552,7 +562,8 @@
                 </div>
 
                 <button id="searchBtn" class="btn btn-primary">
-                    🔍 Discover Available Scenes
+                    <span class="material-icons" style="font-size: 20px;">search</span>
+                    Discover Available Scenes
                 </button>
             </div>
 

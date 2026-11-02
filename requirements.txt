@@ -1,0 +1,9 @@
+asf_search>=13.0,<14
+folium>=0.18
+h5py>=3.10
+matplotlib>=3.8
+numpy>=1.26
+pyproj>=3.6
+rasterio>=1.3.10
+streamlit>=1.38
+streamlit-folium>=0.24
