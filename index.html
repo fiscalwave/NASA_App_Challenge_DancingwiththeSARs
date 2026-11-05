@@ -705,6 +705,24 @@
             transform: translateY(0);
         }
 
+        .btn-secondary {
+            background: rgba(100, 116, 139, 0.8);
+            color: #f1f5f9;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            transition: all 0.3s ease;
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(100, 116, 139, 1);
+            border-color: rgba(148, 163, 184, 0.5);
+            transform: translateY(-4px);
+        }
+
+        .btn-secondary:active {
+            transform: translateY(0);
+        }
+
         /* RESULTS */
         .results-container {
             background: rgba(30, 41, 59, 0.6);
@@ -863,6 +881,10 @@
                 <button id="searchBtn" class="btn btn-primary">
                     <span class="material-icons" style="font-size: 20px;">search</span>
                     Discover Available Scenes
+                </button>
+                <button id="resetBtn" class="btn btn-secondary">
+                    <span class="material-icons" style="font-size: 20px;">refresh</span>
+                    Reset
                 </button>
             </div>
 
@@ -1246,6 +1268,10 @@
             } catch (error) {
                 console.error('Search error:', error);
             }
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            resetAllFields();
         });
 
         function getMapBounds() {
