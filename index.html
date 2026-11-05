@@ -100,100 +100,6 @@
             margin: 0 auto 2rem;
         }
 
-        /* ADVANCED SEARCH BOX */
-        .search-container {
-            max-width: 700px;
-            margin: 0 auto 4rem;
-        }
-
-        .search-box {
-            display: flex;
-            align-items: center;
-            background: rgba(30, 41, 59, 0.8);
-            backdrop-filter: blur(10px);
-            border: 2px solid rgba(56, 189, 248, 0.2);
-            border-radius: 3rem;
-            padding: 0.75rem 1.5rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 8px 32px rgba(56, 189, 248, 0.1);
-        }
-
-        .search-box:hover {
-            border-color: rgba(56, 189, 248, 0.4);
-            box-shadow: 0 12px 48px rgba(56, 189, 248, 0.15);
-            transform: translateY(-2px);
-        }
-
-        .search-box:focus-within {
-            border-color: rgba(56, 189, 248, 0.6);
-            box-shadow: 0 16px 64px rgba(56, 189, 248, 0.2);
-        }
-
-        .search-input {
-            flex: 1;
-            background: none;
-            border: none;
-            color: #e2e8f0;
-            font-size: 1rem;
-            outline: none;
-            padding: 0 1rem;
-            font-weight: 400;
-        }
-
-        .search-input::placeholder {
-            color: #64748b;
-        }
-
-        .search-controls {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-shrink: 0;
-        }
-
-        .mic-btn, .reset-btn {
-            background: none;
-            border: none;
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-size: 1.2rem;
-            flex-shrink: 0;
-            border-radius: 50%;
-            color: #38bdf8;
-        }
-
-        .mic-btn .material-icons, .reset-btn .material-icons {
-            font-size: 24px;
-            line-height: 1;
-        }
-
-        .mic-btn:hover, .reset-btn:hover {
-            transform: scale(1.1);
-            background: rgba(56, 189, 248, 0.1);
-        }
-
-        .mic-btn.listening {
-            color: #f43f5e;
-            animation: pulse 1.5s infinite;
-        }
-
-        .mic-btn.listening:hover {
-            background: rgba(244, 63, 94, 0.1);
-        }
-
-        @keyframes pulse {
-            0%, 100% {
-                text-shadow: 0 0 0 0 rgba(244, 63, 94, 0.7);
-            }
-            50% {
-                text-shadow: 0 0 0 10px rgba(244, 63, 94, 0);
-            }
-        }
 
         /* CONTENT GRID - CHANGED TO SINGLE COLUMN */
         .content-grid {
@@ -915,27 +821,6 @@
             <p>Search for flood-affected areas by location, set analysis parameters, and discover available NISAR satellite scenes</p>
         </section>
 
-        <!-- ADVANCED SEARCH BOX -->
-        <div class="search-container">
-            <div class="search-box">
-                <input
-                    type="text"
-                    id="voiceInput"
-                    class="search-input"
-                    placeholder="Click the microphone to start: Step 1 - Say Location, Step 2 - Say Radius, Step 3 - Say Start Date, Step 4 - Say End Date"
-                    spellcheck="false"
-                    readonly
-                />
-                <div class="search-controls">
-                    <button id="micButton" class="mic-btn" title="Click to speak">
-                        <span class="material-icons">mic</span>
-                    </button>
-                    <button id="resetButton" class="reset-btn" title="Reset all fields">
-                        <span class="material-icons">refresh</span>
-                    </button>
-                </div>
-            </div>
-        </div>
 
         <!-- CONTENT GRID -->
         <div class="content-grid">
@@ -1221,7 +1106,6 @@
 
         // Reset all fields
         function resetAllFields() {
-            document.getElementById('voiceInput').value = '';
             document.getElementById('locationInput').value = '';
             document.getElementById('radiusInput').value = '10';
             document.getElementById('startDate').value = '2025-01-01';
@@ -1323,157 +1207,6 @@
             `;
         }
 
-        // Voice recognition with step-by-step flow
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        let recognition;
-        let isListening = false;
-        let voiceStep = null; // 'location', 'radius', 'startDate', 'endDate', or null
-        let voiceData = {}; // Store data collected from voice
-
-        if (SpeechRecognition) {
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.language = 'en-US';
-
-            document.getElementById('micButton').addEventListener('click', () => {
-                if (isListening) {
-                    recognition.stop();
-                    isListening = false;
-                    document.getElementById('micButton').classList.remove('listening');
-                } else {
-                    // Start the step-by-step voice flow
-                    voiceStep = 'location';
-                    voiceData = {};
-                    document.getElementById('voiceInput').value = '🎤 Listening... Please say your location (e.g., "Venice Italy" or "45.4408, 12.3155")';
-                    isListening = true;
-                    document.getElementById('micButton').classList.add('listening');
-                    recognition.start();
-                }
-            });
-
-            recognition.onresult = (event) => {
-                let transcript = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    transcript += event.results[i][0].transcript;
-                }
-
-                // Display what's being captured
-                if (voiceStep === 'location') {
-                    document.getElementById('voiceInput').value = '📍 Location: ' + transcript;
-                } else if (voiceStep === 'radius') {
-                    document.getElementById('voiceInput').value = '📏 Radius: ' + transcript + ' km';
-                } else if (voiceStep === 'startDate') {
-                    document.getElementById('voiceInput').value = '📅 Start Date: ' + transcript;
-                } else if (voiceStep === 'endDate') {
-                    document.getElementById('voiceInput').value = '📅 End Date: ' + transcript;
-                }
-
-                // When user stops speaking (isFinal = true)
-                if (event.results[event.results.length - 1].isFinal) {
-                    setTimeout(() => {
-                        processVoiceStep(transcript);
-                    }, 300);
-                }
-            };
-
-            recognition.onend = () => {
-                if (voiceStep) {
-                    document.getElementById('micButton').classList.add('listening');
-                    recognition.start(); // Continue listening for next step
-                } else {
-                    document.getElementById('micButton').classList.remove('listening');
-                    isListening = false;
-                }
-            };
-        }
-
-        // Process each voice step
-        function processVoiceStep(transcript) {
-            transcript = transcript.trim().toLowerCase();
-
-            if (voiceStep === 'location') {
-                voiceData.location = transcript;
-                document.getElementById('locationInput').value = transcript;
-                
-                // Move to next step
-                voiceStep = 'radius';
-                document.getElementById('voiceInput').value = '🎤 Listening... Please say the search radius in kilometers (e.g., "15" or "20 kilometers")';
-                recognition.start();
-            }
-            else if (voiceStep === 'radius') {
-                const radiusMatch = transcript.match(/(\d+)/);
-                if (radiusMatch) {
-                    voiceData.radius = Math.max(5, Math.min(100, parseInt(radiusMatch[1])));
-                    document.getElementById('radiusInput').value = voiceData.radius;
-                }
-                
-                // Move to next step
-                voiceStep = 'startDate';
-                document.getElementById('voiceInput').value = '🎤 Listening... Please say the start date (e.g., "January 15 2025" or "2025-01-15")';
-                recognition.start();
-            }
-            else if (voiceStep === 'startDate') {
-                voiceData.startDate = transcript;
-                document.getElementById('startDate').value = parseDate(transcript);
-                
-                // Move to next step
-                voiceStep = 'endDate';
-                document.getElementById('voiceInput').value = '🎤 Listening... Please say the end date (e.g., "February 15 2025" or "2025-02-15")';
-                recognition.start();
-            }
-            else if (voiceStep === 'endDate') {
-                voiceData.endDate = transcript;
-                document.getElementById('endDate').value = parseDate(transcript);
-                
-                // All steps complete - show summary and search
-                voiceStep = null;
-                document.getElementById('voiceInput').value = `✅ Search Parameters Set:\n📍 ${voiceData.location}\n📏 ${voiceData.radius} km\n📅 ${document.getElementById('startDate').value} to ${document.getElementById('endDate').value}\n\n🔍 Searching...`;
-                
-                document.getElementById('micButton').classList.remove('listening');
-                isListening = false;
-                
-                // Geocode and search
-                setTimeout(() => {
-                    geocodeLocation();
-                }, 500);
-                
-                setTimeout(() => {
-                    document.getElementById('searchBtn').click();
-                }, 1000);
-            }
-        }
-
-        function parseDate(dateStr) {
-            const months = {
-                'january': '01', 'february': '02', 'march': '03', 'april': '04',
-                'may': '05', 'june': '06', 'july': '07', 'august': '08',
-                'september': '09', 'october': '10', 'november': '11', 'december': '12',
-                'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
-                'jun': '06', 'jul': '07', 'aug': '08', 'sep': '09',
-                'oct': '10', 'nov': '11', 'dec': '12'
-            };
-            dateStr = dateStr.toLowerCase().trim();
-
-            const match1 = dateStr.match(/(\w+)\s+(\d+)/);
-            if (match1) {
-                const month = months[match1[1]];
-                const day = match1[2].padStart(2, '0');
-                return `${new Date().getFullYear()}-${month}-${day}`;
-            }
-
-            const match2 = dateStr.match(/(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})/);
-            if (match2) {
-                let year = match2[1], month = match2[2], day = match2[3];
-                if (year.length === 4) {
-                    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-                } else if (day.length === 4) {
-                    return `${day}-${month.padStart(2, '0')}-${year.padStart(2, '0')}`;
-                }
-            }
-            return '';
-        }
-
         // Search function
         document.getElementById('searchBtn').addEventListener('click', async () => {
             let bounds = getMapBounds();
@@ -1514,9 +1247,6 @@
                 console.error('Search error:', error);
             }
         });
-
-        // Reset button function
-        document.getElementById('resetButton').addEventListener('click', resetAllFields);
 
         function getMapBounds() {
             if (!locationCircle) return null;
