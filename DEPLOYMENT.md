@@ -34,17 +34,16 @@ pip install -r requirements.txt
 
 ### Step 3: Configure Environment
 
-Create `.env` file in `backend/` directory:
+Create `.env` file in `backend/` directory (never commit this file — it's gitignored):
 
 ```
-ASF_API_BASE_URL=https://api.daac.asf.alaska.edu
-NOMINATIM_BASE_URL=https://nominatim.openstreetmap.org
-LOG_LEVEL=INFO
-PORT=8000
-HOST=0.0.0.0
+ASF_USERNAME=your_earthdata_username
+ASF_PASSWORD=your_earthdata_password
 ```
 
-### Step 4: Start Backend
+Real [NASA Earthdata](https://urs.earthdata.nasa.gov/) credentials are required — the application uses real ASF/NISAR data only, with no mock data fallback.
+
+### Step 4: Start the Application
 
 ```bash
 python app_real_api.py
@@ -55,25 +54,50 @@ Expected output:
 INFO:     Uvicorn running on http://0.0.0.0:8000
 ```
 
-### Step 5: Start Frontend (New Terminal)
+This single command now serves both the API **and** the frontend (`index.html`) from one process — no separate frontend server is needed.
 
-From project root:
-
-```bash
-python -m http.server 3000
-```
-
-Expected output:
-```
-Serving HTTP on 0.0.0.0 port 3000
-```
-
-### Step 6: Access Application
+### Step 5: Access Application
 
 Open browser to:
 ```
-http://localhost:3000
+http://localhost:8000
 ```
+
+---
+
+## Render.com Deployment (Recommended — Auto-Deploy on Every Git Push)
+
+This is the recommended option for active hackathon development: push code, and the live URL updates automatically within a minute or two, with zero manual redeploy steps.
+
+### Why Render for this project
+- One combined service serves both the frontend and the API from a single URL (same-origin, no CORS issues).
+- Free tier is sufficient for team testing.
+- `render.yaml` in the repo root is a Render "Blueprint" — Render reads it automatically and configures the service for you.
+- `autoDeploy: true` means every `git push` to `main` triggers a fresh deployment automatically.
+
+### One-time setup
+1. Go to [render.com](https://dashboard.render.com) and sign in (GitHub login is simplest).
+2. Click **New** → **Blueprint**.
+3. Connect your GitHub account and select the `NASA_App_Challenge_DancingwiththeSARs` repository.
+4. Render detects `render.yaml` automatically and shows the `nisar-flood-wetland-mapping` web service.
+5. You will be prompted to enter two secret values (these are **not** stored in git, only in Render's dashboard):
+   - `ASF_USERNAME` — your NASA Earthdata username
+   - `ASF_PASSWORD` — your NASA Earthdata password
+6. Click **Apply** / **Create Web Service**. The first build takes a few minutes (installing scientific Python packages).
+7. Once live, Render gives you a public URL like `https://nisar-flood-wetland-mapping.onrender.com` — share this with your team.
+
+### Every time you make changes afterward
+```bash
+git add -A
+git commit -m "your change"
+git push origin main
+```
+That's it — Render automatically rebuilds and redeploys. No dashboard steps required after the one-time setup above.
+
+### Notes
+- No mock data is used — the deployed app authenticates against real NASA Earthdata/ASF services using the credentials you entered, exactly like local development.
+- Free tier services on Render "spin down" after 15 minutes of inactivity and take ~30-60 seconds to wake up on the next request — this is normal, not an error.
+- To update credentials later, go to the service's **Environment** tab on the Render dashboard.
 
 ---
 

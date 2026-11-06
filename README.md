@@ -36,17 +36,11 @@ This application enables emergency managers to quickly identify surface changes 
    pip install -r requirements.txt
    ```
 
-3. **Start the backend API server**
+3. **Start the application**
    ```bash
    python app_real_api.py
    ```
-   Server runs on `http://localhost:8000`
-
-4. **Serve the frontend** (in a new terminal from project root)
-   ```bash
-   python -m http.server 3000
-   ```
-   Application accessible at `http://localhost:3000`
+   This single command serves both the API and the frontend together. Open your browser to `http://localhost:8000`
 
 ### Using the Application
 
@@ -66,7 +60,6 @@ This application enables emergency managers to quickly identify surface changes 
 - **Automated Inundation Highlighting** - Orange overlay for detected flood zones on map
 - **Confidence Badges** - Data quality indicators (accuracy, atmospheric effects)
 - **Real NISAR Data** - Integration with ASF NASA API for actual satellite scenes
-- **Voice Command Support** - Hands-free location and parameter input
 
 ### Phase 2: Operational Impact (Complete)
 - **Affected Area Estimator** - Calculate flooded area in km² or square miles
@@ -159,16 +152,6 @@ Start Date: 2026-07-21
 End Date: 2026-08-15
 Expected: Multiple scenes with infrastructure overlap
 ```
-
-## Voice Command Support
-
-Optional hands-free input using Web Speech API:
-
-1. Click the microphone icon in search panel
-2. Follow prompts for each field
-3. Application auto-populates and searches
-
-**Browser Support:** Chrome, Edge, Safari (iOS 14.5+)
 
 ## Confidence Scoring System
 

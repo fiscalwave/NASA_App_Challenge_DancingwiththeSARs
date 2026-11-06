@@ -201,7 +201,6 @@ data/
 ### Using the Application
 - [README.md - Using the Application](./README.md#using-the-application)
 - [README.md - Usage Examples](./README.md#usage-examples)
-- [README.md - Voice Command Support](./README.md#voice-command-support)
 
 ### API Integration
 - [API_REFERENCE.md - All endpoints](./API_REFERENCE.md#endpoints)
@@ -219,6 +218,7 @@ data/
 - [DEVELOPMENT.md - Feature workflow](./DEVELOPMENT.md#feature-development-workflow)
 
 ### Deployment
+- [DEPLOYMENT.md - Render.com (recommended, auto-deploy)](./DEPLOYMENT.md#rendercom-deployment-recommended--auto-deploy-on-every-git-push)
 - [DEPLOYMENT.md - Docker](./DEPLOYMENT.md#docker-deployment)
 - [DEPLOYMENT.md - AWS](./DEPLOYMENT.md#aws-ec2-deployment)
 - [DEPLOYMENT.md - Google Cloud](./DEPLOYMENT.md#google-cloud-run-deployment)
