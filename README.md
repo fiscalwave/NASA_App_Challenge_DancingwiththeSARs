@@ -4,6 +4,10 @@
 
 An open-source interactive web application for real-time flood and wetland change detection using NISAR satellite data, optimized for emergency management professionals.
 
+## Challenge Problem Statement
+
+Earth's surface is an endless dance of natural processes and human activities, but these changes are often difficult to visualize, understand, and communicate. From wetland loss to forest wildfires, earthquakes, farming activities, glacier movement, and more, Earth is in a constant waltz of surface changes. Your challenge is to build an interactive application that uses radar remote sensing data from the NASA-ISRO Synthetic Aperture Radar (NISAR) mission to track and visualize one or more types of surface change at locations around the world.
+
 ## Overview
 
 This application enables emergency managers to quickly identify surface changes after flood events using satellite radar data from NASA's NISAR mission. It combines geospatial analysis with a user-friendly interface to support disaster response and field assessment prioritization.
