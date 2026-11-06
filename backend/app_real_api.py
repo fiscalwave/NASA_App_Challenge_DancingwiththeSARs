@@ -6,6 +6,7 @@ Requires Earthdata login credentials for authentication
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -406,7 +407,29 @@ def search_asf_nisar_data(bounds: Dict[str, float], start_date: str, end_date: s
 
 @app.get("/", tags=["System"])
 async def root():
-    """Health check and API information."""
+    """Serve the frontend application."""
+    index_path = Path(__file__).parent.parent / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {
+        "name": "NISAR Flood & Wetland Monitor",
+        "version": "1.0.0",
+        "status": "running",
+        "mode": "REAL API (No Mock Data)",
+        "asf_search_version": asf_search.__version__,
+        "docs": "/docs",
+        "endpoints": {
+            "search": "POST /api/search",
+            "analyze": "POST /api/analyze",
+            "export": "POST /api/export",
+            "health": "GET /health"
+        }
+    }
+
+
+@app.get("/api", tags=["System"])
+async def api_info():
+    """API information."""
     return {
         "name": "NISAR Flood & Wetland Monitor",
         "version": "1.0.0",
@@ -605,4 +628,5 @@ async def get_scene_comparison(request: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

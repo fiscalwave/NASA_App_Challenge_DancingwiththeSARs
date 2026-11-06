@@ -1308,7 +1308,7 @@
             const endDate = document.getElementById('endDate').value;
 
             try {
-                const response = await fetch('http://127.0.0.1:8000/api/search', {
+                const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1468,7 +1468,7 @@
                 // Fetch NISAR SAR backscatter visualizations from backend
                 const sceneId = scene.id || scene.scene_id || `NISAR_${scene.datetime || 'unknown'}`;
                 
-                const response = await fetch('http://127.0.0.1:8000/api/imagery/comparison', {
+                const response = await fetch('/api/imagery/comparison', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

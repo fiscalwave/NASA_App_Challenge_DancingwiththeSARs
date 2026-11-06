@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: nisar-flood-wetland-mapping
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn app_real_api:app --host 0.0.0.0 --port $PORT"
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ASF_USERNAME
+        sync: false
+      - key: ASF_PASSWORD
+        sync: false
