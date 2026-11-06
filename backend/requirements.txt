@@ -3,32 +3,12 @@ fastapi==0.115.6
 uvicorn==0.32.1
 pydantic==2.10.4
 
-# Geospatial & Raster Processing (GDAL removed - requires compilation)
-geopandas==1.0.1
-shapely==2.0.6
-pyproj==3.8.0
-
 # Data Discovery & Download
 asf-search==8.0.0
 
-# Scientific Computing
+# Imagery Processing
 numpy==1.26.4
-scipy==1.15.2
-scikit-image==0.24.0
-pandas==2.2.3
-
-# HDF5 Support
-h5py==3.12.1
-
-# Data Visualization (for validation)
-matplotlib==3.9.2
 Pillow==11.1.0
 
 # Utilities
 python-dotenv==1.0.1
-python-multipart==0.0.6
-
-# Development & Testing
-pytest==8.3.4
-pytest-asyncio==0.24.0
-pytest-cov==6.0.0
