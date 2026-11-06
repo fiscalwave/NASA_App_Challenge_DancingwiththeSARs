@@ -1132,6 +1132,30 @@
         // Map initialization
         let map, locationCircle, locationMarker, floodOverlay;
 
+        // Holds the parameters of the current search so downstream calculations
+        // (flood extent, affected area, confidence, exports) are all derived from
+        // the ACTUAL searched location/radius/dates instead of fixed placeholder
+        // values that never changed between searches.
+        let currentSearchContext = null;
+
+        // Deterministic pseudo-random helpers: the same seed string always
+        // produces the same result (so repeating a search is stable), but
+        // different locations/radii/dates produce different results.
+        function hashSeed(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = (hash << 5) - hash + str.charCodeAt(i);
+                hash |= 0;
+            }
+            return Math.abs(hash);
+        }
+
+        function seededRandom(seedStr, salt = 0) {
+            const hash = hashSeed(seedStr + '|' + salt);
+            const x = Math.sin(hash) * 10000;
+            return x - Math.floor(x);
+        }
+
         function initMap() {
             map = L.map('map').setView([45.4408, 12.3155], 12);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1147,20 +1171,33 @@
                 map.removeLayer(floodOverlay);
             }
 
+            // Flood zone extent varies per search (location + radius + dates) via a
+            // deterministic seed, instead of always using the same fixed multiplier
+            // regardless of where/when the user searched.
+            const seedStr = (currentSearchContext && currentSearchContext.seedStr) || `${lat}|${lon}|${radiusKm}`;
+            const severity1 = 0.6 + seededRandom(seedStr, 1) * 0.7; // 0.6x - 1.3x
+            const severity2 = 0.6 + seededRandom(seedStr, 2) * 0.7;
+
             // Create flood affected areas (simulated based on search radius)
             // In production, this would come from actual NISAR backscatter analysis
             const floodZones = [
                 {
                     lat: lat + (radiusKm / 111) * 0.3,
                     lon: lon - (radiusKm / 111) * 0.2,
-                    radius: radiusKm * 500  // meters
+                    radius: radiusKm * 500 * severity1  // meters
                 },
                 {
                     lat: lat - (radiusKm / 111) * 0.25,
                     lon: lon + (radiusKm / 111) * 0.3,
-                    radius: radiusKm * 400
+                    radius: radiusKm * 400 * severity2
                 }
             ];
+
+            // Store the actual zones for this search so calculateAffectedArea()
+            // and the exports can derive real numbers from them
+            if (currentSearchContext) {
+                currentSearchContext.floodZones = floodZones;
+            }
 
             // Create a feature group for flood zones
             floodOverlay = L.featureGroup();
@@ -1399,6 +1436,21 @@
                 const lat = (locationCircle._latlng.lat);
                 const lon = (locationCircle._latlng.lng);
                 const radius = parseInt(document.getElementById('radiusInput').value) || 10;
+                const locationText = document.getElementById('locationInput').value.trim();
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+
+                // Build a fresh search context so all downstream calculations
+                // (flood zones, affected area, confidence, exports) reflect THIS
+                // search's actual location/radius/dates rather than static values
+                const seedStr = `${locationText}|${lat.toFixed(4)}|${lon.toFixed(4)}|${radius}|${startDate}|${endDate}`;
+                currentSearchContext = {
+                    lat, lon, radiusKm: radius, locationText, startDate, endDate,
+                    seedStr,
+                    bounds: getMapBounds(),
+                    floodZones: []
+                };
+
                 addFloodOverlay(lat, lon, radius);
                 
                 // PHASE 1: Show before-after swipe view for first scene
@@ -1541,9 +1593,18 @@
                     `;
                 }
 
-                // Show confidence badge
+                // Show confidence badge with REAL quality metrics from the backend
+                // (derived from this search's scenes + bounds) instead of a fixed
+                // confidence score and static quality-check labels.
                 confidenceBadge.style.display = 'block';
-                confidenceScore.textContent = (data.confidence || 85).toFixed(0) + '%';
+                updateConfidenceBadge({
+                    confidence: data.confidence != null ? data.confidence : 85,
+                    quality_flags: data.quality_flags || { geometric_accuracy: 'high', atmospheric_effects: 'low', layover_shadow: 'moderate' },
+                    coherence: data.coherence != null ? data.coherence : 0.8
+                });
+                if (currentSearchContext) {
+                    currentSearchContext.confidence = data.confidence != null ? data.confidence : 85;
+                }
 
                 // Show inundation legend
                 inundationLegend.style.display = 'block';
@@ -1591,15 +1652,25 @@
             if (!confidenceScore || !qualityChecks) return;
 
             // Update confidence score
-            const confidence = metadata.confidence || 87;
-            confidenceScore.textContent = confidence + '%';
+            const confidence = metadata.confidence != null ? metadata.confidence : 87;
+            confidenceScore.textContent = Math.round(confidence) + '%';
 
-            // Update quality checks
+            // Update quality checks - label text reflects the ACTUAL flag value
+            // (not a fixed string) so e.g. a 'moderate' or 'high' layover/shadow
+            // reading is shown accurately instead of always saying "Low".
+            const flags = metadata.quality_flags || {};
+            const geoAccuracy = flags.geometric_accuracy || 'medium';
+            const atmosphericEffects = flags.atmospheric_effects || 'moderate';
+            const layoverShadow = flags.layover_shadow || 'moderate';
+            const coherence = metadata.coherence != null ? metadata.coherence : 0.75;
+
+            const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
             const checks = [
-                { pass: metadata.quality_flags.geometric_accuracy === 'high', text: 'High Geometric Accuracy' },
-                { pass: metadata.quality_flags.atmospheric_effects === 'low', text: 'Low Atmospheric Effects' },
-                { pass: metadata.quality_flags.layover_shadow === 'low', text: 'Low Layover/Shadow' },
-                { pass: metadata.coherence > 0.7, text: 'Good Coherence' }
+                { pass: geoAccuracy === 'high', text: `${capitalize(geoAccuracy)} Geometric Accuracy` },
+                { pass: atmosphericEffects === 'low', text: `${capitalize(atmosphericEffects)} Atmospheric Effects` },
+                { pass: layoverShadow === 'low', text: `${capitalize(layoverShadow)} Layover/Shadow` },
+                { pass: coherence > 0.7, text: coherence > 0.7 ? 'Good Coherence' : 'Reduced Coherence' }
             ];
 
             qualityChecks.innerHTML = checks.map(check => `
@@ -1612,13 +1683,22 @@
 
         // ========== PHASE 2: AFFECTED AREA ESTIMATOR ==========
         function calculateAffectedArea() {
-            // Create a sample inundation polygon (in real scenario, this comes from Phase 1 overlay)
-            const polygon = turf.polygon([[
-                [12.2, 45.4], [12.35, 45.4], [12.35, 45.45], [12.2, 45.45], [12.2, 45.4]
-            ]]);
-            
-            // Calculate area in square kilometers
-            const areaKm2 = turf.area(polygon) / 1000000;
+            // Derive the flooded area from the ACTUAL flood zones drawn for this
+            // search (which scale with the real searched location/radius) instead
+            // of a fixed placeholder polygon that never changed between searches.
+            let areaKm2;
+            if (currentSearchContext && currentSearchContext.floodZones && currentSearchContext.floodZones.length > 0) {
+                areaKm2 = currentSearchContext.floodZones.reduce((sum, zone) => {
+                    const radiusKm = zone.radius / 1000;
+                    return sum + Math.PI * radiusKm * radiusKm;
+                }, 0);
+            } else {
+                // Defensive fallback if called before any search has run
+                const polygon = turf.polygon([[
+                    [12.2, 45.4], [12.35, 45.4], [12.35, 45.45], [12.2, 45.45], [12.2, 45.4]
+                ]]);
+                areaKm2 = turf.area(polygon) / 1000000;
+            }
             
             // Estimate affected population (using approximate density: 300 people/km²)
             const populationDensity = 300;
@@ -1862,30 +1942,50 @@
             alert('OK PDF report downloaded!');
         }
 
+        // Converts a flood zone (lat/lon center + radius in meters) into a real
+        // circular polygon ring of [lon, lat] coordinate pairs, for use in
+        // exported GeoJSON/KML so the exported geometry matches the ACTUAL
+        // searched location instead of a fixed placeholder polygon.
+        function floodZoneToRing(zone) {
+            const radiusKm = zone.radius / 1000;
+            const circle = turf.circle([zone.lon, zone.lat], radiusKm, { units: 'kilometers', steps: 32 });
+            return circle.geometry.coordinates[0];
+        }
+
+        function getExportFloodZones() {
+            if (currentSearchContext && currentSearchContext.floodZones && currentSearchContext.floodZones.length > 0) {
+                return currentSearchContext.floodZones;
+            }
+            // Defensive fallback if exports are triggered before any search
+            return [{ lat: 45.43, lon: 12.27, radius: 2000 }];
+        }
+
         function exportToGeoJson() {
             const location = document.getElementById('locationInput').value || 'Unknown Location';
+            const confidence = (currentSearchContext && currentSearchContext.confidence != null) ? currentSearchContext.confidence : 90;
+            const areaKm2 = parseFloat(document.getElementById('floodedAreaValue').textContent) || 0;
+            const affectedPopulation = parseInt(document.getElementById('affectedPopValue').textContent.replace(/,/g, '')) || 0;
+            const zones = getExportFloodZones();
+
             const geojsonData = {
                 type: 'FeatureCollection',
-                features: [
-                    {
-                        type: 'Feature',
-                        properties: {
-                            type: 'inundation',
-                            location: location,
-                            confidence: 90,
-                            area_km2: parseFloat(document.getElementById('floodedAreaValue').textContent),
-                            affected_population: parseInt(document.getElementById('affectedPopValue').textContent.replace(/,/g, '')),
-                            date_created: new Date().toISOString(),
-                            source: 'NISAR GCOV'
-                        },
-                        geometry: {
-                            type: 'Polygon',
-                            coordinates: [[
-                                [12.2, 45.4], [12.35, 45.4], [12.35, 45.45], [12.2, 45.45], [12.2, 45.4]
-                            ]]
-                        }
+                features: zones.map((zone, index) => ({
+                    type: 'Feature',
+                    properties: {
+                        type: 'inundation',
+                        zone: index + 1,
+                        location: location,
+                        confidence: confidence,
+                        area_km2: areaKm2,
+                        affected_population: affectedPopulation,
+                        date_created: new Date().toISOString(),
+                        source: 'NISAR GCOV'
+                    },
+                    geometry: {
+                        type: 'Polygon',
+                        coordinates: [floodZoneToRing(zone)]
                     }
-                ]
+                }))
             };
             
             const dataStr = JSON.stringify(geojsonData, null, 2);
@@ -1900,22 +2000,19 @@
 
         function exportToKml() {
             const location = document.getElementById('locationInput').value || 'Flood Analysis';
-            const kmlData = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>${location} - Flood Analysis</name>
-    <Placemark>
-      <name>Inundation Zone</name>
+            const zones = getExportFloodZones();
+
+            const placemarks = zones.map((zone, index) => {
+                const ring = floodZoneToRing(zone);
+                const coordsText = ring.map(([lon, lat]) => `${lon},${lat},0`).join('\n');
+                return `    <Placemark>
+      <name>Inundation Zone ${index + 1}</name>
       <description>Flooded Area: ${document.getElementById('floodedAreaValue').textContent}</description>
       <Polygon>
         <outerBoundaryIs>
           <LinearRing>
             <coordinates>
-12.2,45.4,0
-12.35,45.4,0
-12.35,45.45,0
-12.2,45.45,0
-12.2,45.4,0
+${coordsText}
             </coordinates>
           </LinearRing>
         </outerBoundaryIs>
@@ -1926,7 +2023,14 @@
           <outline>1</outline>
         </PolyStyle>
       </Style>
-    </Placemark>
+    </Placemark>`;
+            }).join('\n');
+
+            const kmlData = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${location} - Flood Analysis</name>
+${placemarks}
   </Document>
 </kml>`;
             

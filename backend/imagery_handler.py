@@ -5,6 +5,7 @@ Provides raster imagery tiles for before/after comparison in swipe view
 
 import numpy as np
 import io
+import hashlib
 from PIL import Image, ImageDraw, ImageFont
 from typing import Tuple, Optional, Dict, Any
 import colorsys
@@ -75,35 +76,48 @@ class SARBackscatterRenderer:
         
         return img
     
-    def _generate_synthetic_nisar_data(self) -> np.ndarray:
-        """Generate synthetic NISAR-like SAR backscatter data for visualization."""
-        
+    def _generate_synthetic_nisar_data(self, rng: Optional[np.random.RandomState] = None) -> np.ndarray:
+        """Generate synthetic NISAR-like SAR backscatter data for visualization.
+
+        Args:
+            rng: Optional seeded random generator so the terrain/urban/water layout
+                 and speckle noise are deterministic per search location instead of
+                 always identical (defaults to global numpy randomness if omitted).
+        """
+        if rng is None:
+            rng = np.random
+
         # Create base terrain with realistic SAR characteristics
         y, x = np.ogrid[:self.height, :self.width]
-        
+
         # Natural terrain variation (typically -20 to -5 dB for vegetation)
         terrain_base = -15 + 5 * np.sin(y * 0.01) * np.cos(x * 0.01)
-        
+
         # Add urban/built-up areas (typically -8 to -2 dB for buildings)
-        urban_x, urban_y = self.width // 3, self.height // 3
+        # Position/size vary per seed so different search locations don't look identical
+        urban_x = int(rng.uniform(0.2, 0.5) * self.width)
+        urban_y = int(rng.uniform(0.2, 0.5) * self.height)
+        urban_radius = rng.uniform(60, 110)
         urban_dist = np.sqrt((x - urban_x)**2 + (y - urban_y)**2)
-        urban_areas = np.where(urban_dist < 80, -5, 0)
-        
+        urban_areas = np.where(urban_dist < urban_radius, -5, 0)
+
         # Add water features (very low backscatter, typically -25 to -18 dB)
-        water_x, water_y = 2 * self.width // 3, 2 * self.height // 3
+        water_x = int(rng.uniform(0.5, 0.8) * self.width)
+        water_y = int(rng.uniform(0.5, 0.8) * self.height)
+        water_radius = rng.uniform(40, 80)
         water_dist = np.sqrt((x - water_x)**2 + (y - water_y)**2)
-        water_areas = np.where(water_dist < 60, -22, 0)
-        
+        water_areas = np.where(water_dist < water_radius, -22, 0)
+
         # Combine layers
         backscatter = terrain_base + urban_areas + water_areas
-        
+
         # Add speckle noise (SAR characteristic)
-        speckle = np.random.normal(0, 1, (self.height, self.width))
+        speckle = rng.normal(0, 1, (self.height, self.width))
         backscatter += speckle * 0.5
-        
+
         # Clip to realistic SAR range (-30 to 0 dB)
         backscatter = np.clip(backscatter, -30, 0)
-        
+
         return backscatter
     
     def _render_grayscale(self, backscatter_db: np.ndarray) -> Image.Image:
@@ -279,13 +293,26 @@ class SARBackscatterRenderer:
         return f"data:image/png;base64,{img_base64}"
 
 
-def create_sar_visualization(scene_id: str, scene_type: str = "post-flood") -> str:
+def _seed_from_string(seed_str: str) -> int:
+    """Derive a deterministic 31-bit seed from an arbitrary string (so the same
+    search location/scene always renders the same synthetic imagery, while
+    different locations/scenes render differently)."""
+    digest = hashlib.sha256(seed_str.encode('utf-8')).hexdigest()
+    return int(digest[:8], 16) % (2**31)
+
+
+def create_sar_visualization(scene_id: str, scene_type: str = "post-flood",
+                              bounds: Optional[Dict[str, float]] = None) -> str:
     """
     Create a SAR backscatter visualization for a scene.
     
     Args:
         scene_id: Scene identifier
         scene_type: Type of scene ('pre-flood' or 'post-flood')
+        bounds: Optional search area bounds {north, south, east, west}. Used to
+                seed the synthetic terrain so different search locations produce
+                visibly different imagery, while before/after images for the same
+                search share the same base terrain.
     
     Returns:
         Base64-encoded PNG data URL
@@ -293,8 +320,17 @@ def create_sar_visualization(scene_id: str, scene_type: str = "post-flood") -> s
     
     renderer = SARBackscatterRenderer(width=512, height=512)
     
+    # Terrain seed is based on bounds (shared by both before/after calls for a
+    # given search) so the pair looks like the same place; fall back to scene_id
+    # when bounds are unavailable.
+    if bounds:
+        terrain_seed_str = f"{bounds.get('north')}|{bounds.get('south')}|{bounds.get('east')}|{bounds.get('west')}"
+    else:
+        terrain_seed_str = scene_id
+    terrain_rng = np.random.RandomState(_seed_from_string(terrain_seed_str))
+    
     # Generate synthetic NISAR backscatter
-    backscatter = renderer._generate_synthetic_nisar_data()
+    backscatter = renderer._generate_synthetic_nisar_data(rng=terrain_rng)
     
     # Render visualization
     if scene_type == "pre-flood":
@@ -306,9 +342,17 @@ def create_sar_visualization(scene_id: str, scene_type: str = "post-flood") -> s
         )
     else:
         title = f"Post-Flood Crisis (Scene: {scene_id})"
-        # Simulate some flood (lower backscatter in certain areas)
+        # Flood region position/size/intensity vary per scene+location instead of
+        # always being the same fixed rectangle
+        flood_rng = np.random.RandomState(_seed_from_string(f"{terrain_seed_str}|{scene_id}"))
+        fx = int(flood_rng.uniform(0.15, 0.6) * renderer.width)
+        fy = int(flood_rng.uniform(0.15, 0.6) * renderer.height)
+        fw = int(flood_rng.uniform(80, 220))
+        fh = int(flood_rng.uniform(80, 220))
+        flood_intensity = flood_rng.uniform(5, 12)
+
         flood_backscatter = backscatter.copy()
-        flood_backscatter[150:250, 150:250] -= 8  # Simulate flood in central area
+        flood_backscatter[fy:fy + fh, fx:fx + fw] -= flood_intensity
         flood_mask = (flood_backscatter < (backscatter - 3))
         
         img = renderer.render_sar_backscatter(
