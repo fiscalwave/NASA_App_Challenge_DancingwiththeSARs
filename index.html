@@ -1739,17 +1739,23 @@
             'https://overpass.private.coffee/api/interpreter'
         ];
 
-        async function queryOverpass(query) {
+        async function queryOverpass(query, timeoutMs = 20000) {
             let lastError;
             for (const endpoint of OVERPASS_ENDPOINTS) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
                 try {
-                    const response = await fetch(endpoint, { method: 'POST', body: query });
+                    const response = await fetch(endpoint, { method: 'POST', body: query, signal: controller.signal });
+                    clearTimeout(timeoutId);
                     if (response.ok) {
                         return await response.json();
                     }
                     lastError = new Error(`${endpoint} returned HTTP ${response.status}`);
                 } catch (e) {
-                    lastError = e;
+                    clearTimeout(timeoutId);
+                    lastError = e.name === 'AbortError'
+                        ? new Error(`${endpoint} timed out after ${timeoutMs}ms`)
+                        : e;
                 }
             }
             throw lastError;
