@@ -31,12 +31,13 @@ except ImportError as e:
 # Import Phase 4 real-data discovery/download pipeline (dormant app/ package,
 # now wired into the live API additively - does not replace /api/search)
 try:
-    from app.ingestion.cmr_adapter import CMRAdapter
+    from app.ingestion.cmr_adapter import CMRAdapter, _parse_granule_acquisition_time
     from app.ingestion.download_manager import DownloadManager
 except ImportError as e:
     print(f"Warning: Could not import discovery/download pipeline: {e}")
     CMRAdapter = None
     DownloadManager = None
+    _parse_granule_acquisition_time = None
 
 # Import Phase 5 real GCOV processing pipeline (dormant app/ package: real
 # HDF5 reading, backscatter change detection, flood classification, and
@@ -54,6 +55,18 @@ except ImportError as e:
     ChangeDetectionEngine = None
     GeoTIFFExporter = None
     GeoJSONExporter = None
+
+# Import Phase 6 emergency management intelligence (real infrastructure
+# impact analysis via OpenStreetMap + explainable priority scoring) -
+# additive, built on top of Phase 5's real change-detection output
+try:
+    from app.analysis.infrastructure_impact import compute_infrastructure_impact
+    from app.analysis.priority import compute_priority, compute_observation_age_days
+except ImportError as e:
+    print(f"Warning: Could not import Phase 6 analysis pipeline: {e}")
+    compute_infrastructure_impact = None
+    compute_priority = None
+    compute_observation_age_days = None
 
 
 # Load environment variables from .env (in backend directory)
@@ -1020,6 +1033,97 @@ async def get_analysis_geojson(analysis_id: str, layer_name: str):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Layer not found")
     return FileResponse(file_path, media_type="application/geo+json")
+
+
+# ============================================================================
+# PHASE 6: EMERGENCY MANAGEMENT INTELLIGENCE (real infrastructure impact +
+# explainable priority scoring, built on real Phase 5 output, /api/v2/*)
+# ============================================================================
+
+@app.post("/api/v2/analyze/{analysis_id}/impact", tags=["Impact v6"])
+async def analyze_infrastructure_impact(analysis_id: str):
+    """
+    Real emergency-management intelligence for a completed Phase 5 analysis.
+
+    Performs genuine spatial intersection/proximity analysis between the
+    detected possible-flood polygon and real OpenStreetMap infrastructure
+    (roads, hospitals, schools, settlements, power plants), then produces an
+    explainable, rule-based priority classification (Critical/High/Moderate/
+    Low) with the full list of real factors that produced it.
+
+    Population exposure is intentionally reported as unavailable rather than
+    estimated, since no gridded population dataset is currently integrated.
+
+    Requires /api/v2/analyze to have already been run for this analysis_id.
+    Results are cached on disk (impact.json) so repeat calls are instant and
+    do not re-query OpenStreetMap.
+    """
+    if compute_infrastructure_impact is None or compute_priority is None:
+        raise HTTPException(status_code=503, detail="Phase 6 analysis pipeline not available")
+
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+    flood_geojson_path = result_dir / "possible_flood.geojson"
+    impact_path = result_dir / "impact.json"
+
+    if not summary_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Analysis '{analysis_id}' not found. Run /api/v2/analyze first.",
+        )
+
+    if impact_path.exists():
+        with open(impact_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        return cached
+
+    with open(summary_path) as f:
+        summary = json.load(f)
+
+    with open(flood_geojson_path) as f:
+        flood_geojson = json.load(f)
+
+    bbox = tuple(summary["bounds"])
+    crs = summary["crs"]
+
+    impact = compute_infrastructure_impact(flood_geojson, bbox, crs)
+
+    acquisition_time = _parse_granule_acquisition_time(summary["after_granule_id"]) if _parse_granule_acquisition_time else None
+    observation_age_days = compute_observation_age_days(acquisition_time) if compute_observation_age_days else None
+
+    priority = compute_priority(
+        inundation_area_km2=summary["classification_statistics"]["possible_flood_area_km2"],
+        infrastructure_categories=impact.get("categories", {}),
+        geometry_compatible=summary.get("geometry_compatible", True),
+        observation_age_days=observation_age_days,
+    )
+
+    result = {
+        "status": "success",
+        "cached": False,
+        "analysis_id": analysis_id,
+        "after_granule_acquisition_time": acquisition_time,
+        "infrastructure_impact": impact,
+        "priority": priority,
+    }
+
+    # Only persist to disk if OpenStreetMap actually returned usable data for
+    # at least one category (or the flood polygon was genuinely empty). If
+    # every category failed - e.g. all 3 Overpass mirrors were rate-limited -
+    # that is a transient network condition, not a real analysis result, so
+    # we deliberately do not cache it and allow the next call to retry.
+    categories = impact.get("categories", {})
+    has_real_data = impact.get("status") == "no_flood_detected" or any(
+        cat.get("status") in ("ok", "no_features_found") for cat in categories.values()
+    )
+    if has_real_data:
+        with open(impact_path, "w") as f:
+            json.dump(result, f, indent=2)
+    else:
+        result["note"] = "Not cached: all OpenStreetMap categories were unavailable (transient network failure). Retry the request."
+
+    return result
 
 
 if __name__ == "__main__":

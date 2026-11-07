@@ -63,6 +63,28 @@ def _parse_granule_id_fields(granule_id: str) -> Dict[str, Any]:
     }
 
 
+# Matches the acquisition start/end timestamps embedded in NISAR granule ids,
+# e.g. ..._20251122T024618_20251122T024652_...
+ACQUISITION_TIME_PATTERN = re.compile(r"_(\d{8}T\d{6})_(\d{8}T\d{6})_")
+
+
+def _parse_granule_acquisition_time(granule_id: str) -> Optional[str]:
+    """Extract the real acquisition start time embedded in a NISAR granule id
+    as an ISO-8601 string, or None if it cannot be parsed. Used for honest
+    'how old is this observation' reporting - never guessed or defaulted to
+    the current date."""
+    match = ACQUISITION_TIME_PATTERN.search(granule_id)
+    if not match:
+        return None
+    raw = match.group(1)  # YYYYMMDDTHHMMSS
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(raw, "%Y%m%dT%H%M%S")
+        return dt.isoformat() + "Z"
+    except ValueError:
+        return None
+
+
 class CMRAdapter:
     """Direct CMR client for NISAR L2 GCOV discovery across all maturity tiers."""
 
