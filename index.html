@@ -741,6 +741,36 @@
             transform: translateY(0);
         }
 
+        .form-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .form-buttons .btn-primary {
+            flex: 1;
+        }
+
+        .form-buttons .btn-secondary {
+            flex: 0 0 auto;
+            width: auto;
+        }
+
+        .btn-secondary {
+            background: rgba(51, 65, 85, 0.4);
+            color: #cbd5e1;
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(51, 65, 85, 0.6);
+            border-color: rgba(148, 163, 184, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary:active {
+            transform: translateY(0);
+        }
+
         /* RESULTS */
         .results-container {
             background: rgba(30, 41, 59, 0.6);
@@ -895,10 +925,16 @@
                     </div>
                 </div>
 
-                <button id="searchBtn" class="btn btn-primary">
-                    <span class="material-icons" style="font-size: 20px;">search</span>
-                    Discover Available Scenes
-                </button>
+                <div class="form-buttons">
+                    <button id="searchBtn" class="btn btn-primary">
+                        <span class="material-icons" style="font-size: 20px;">search</span>
+                        Discover Available Scenes
+                    </button>
+                    <button id="resetBtn" class="btn btn-secondary" title="Clear all fields and results">
+                        <span class="material-icons" style="font-size: 20px;">refresh</span>
+                        Reset
+                    </button>
+                </div>
             </div>
 
             <!-- MAP CARD - NOW FULL WIDTH BELOW -->
@@ -1245,7 +1281,7 @@
             return floodOverlay;
         }
 
-        // Reset all fields
+        // Reset all fields and all result/analysis state back to a clean slate
         function resetAllFields() {
             document.getElementById('locationInput').value = '';
             document.getElementById('radiusInput').value = '10';
@@ -1253,7 +1289,23 @@
             document.getElementById('endDate').value = '2025-03-01';
             document.getElementById('resultsSection').style.display = 'none';
             document.getElementById('boundsInfo').textContent = 'Bounds will appear here after location search';
-            
+
+            // Hide all analysis cards (siblings of resultsSection, not cleared by
+            // hiding resultsSection alone)
+            document.getElementById('swipeViewCard').style.display = 'none';
+            document.getElementById('areaEstimatorCard').style.display = 'none';
+            document.getElementById('layerControlsCard').style.display = 'none';
+            document.getElementById('exportMenuCard').style.display = 'none';
+            document.getElementById('confidenceBadge').style.display = 'none';
+            document.getElementById('inundationLegend').style.display = 'none';
+
+            // Clear infrastructure layer overlays and uncheck their toggles
+            clearInfrastructureLayers();
+
+            // Clear the per-search context (flood zones, confidence, seed) so a
+            // fresh search starts from a clean state rather than stale values
+            currentSearchContext = null;
+
             // Clear map
             if (locationCircle) map.removeLayer(locationCircle);
             if (locationMarker) map.removeLayer(locationMarker);
@@ -2123,6 +2175,9 @@ ${placemarks}
             document.getElementById('exportKmlBtn').addEventListener('click', exportToKml);
             document.getElementById('exportCsvBtn').addEventListener('click', exportToCsv);
             document.getElementById('shareBtn').addEventListener('click', generateShareableLink);
+
+            // Reset button
+            document.getElementById('resetBtn').addEventListener('click', resetAllFields);
             
             // Phase 2: Add event listeners for infrastructure layer toggles
             document.querySelectorAll('.layer-toggle').forEach(toggle => {
