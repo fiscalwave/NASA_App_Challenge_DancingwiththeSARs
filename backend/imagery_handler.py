@@ -5,7 +5,6 @@ Provides raster imagery tiles for before/after comparison in swipe view
 
 import numpy as np
 import io
-import hashlib
 from PIL import Image, ImageDraw, ImageFont
 from typing import Tuple, Optional, Dict, Any
 import colorsys
@@ -293,76 +292,37 @@ class SARBackscatterRenderer:
         return f"data:image/png;base64,{img_base64}"
 
 
-def _seed_from_string(seed_str: str) -> int:
-    """Derive a deterministic 31-bit seed from an arbitrary string (so the same
-    search location/scene always renders the same synthetic imagery, while
-    different locations/scenes render differently)."""
-    digest = hashlib.sha256(seed_str.encode('utf-8')).hexdigest()
-    return int(digest[:8], 16) % (2**31)
-
-
-def create_sar_visualization(scene_id: str, scene_type: str = "post-flood",
-                              bounds: Optional[Dict[str, float]] = None) -> str:
+def render_real_sar_layer(
+    tif_path: str,
+    title: str,
+    colormap: str = "grayscale",
+    inundation_mask_path: Optional[str] = None,
+) -> str:
     """
-    Create a SAR backscatter visualization for a scene.
-    
-    Args:
-        scene_id: Scene identifier
-        scene_type: Type of scene ('pre-flood' or 'post-flood')
-        bounds: Optional search area bounds {north, south, east, west}. Used to
-                seed the synthetic terrain so different search locations produce
-                visibly different imagery, while before/after images for the same
-                search share the same base terrain.
-    
-    Returns:
-        Base64-encoded PNG data URL
+    Render a REAL SAR backscatter GeoTIFF (produced by Phase 5's
+    ChangeDetectionEngine/GeoTIFFExporter from an actual downloaded NISAR L2
+    GCOV granule) as a base64 PNG for display, reusing the same colorization/
+    overlay drawing code as the (now-removed) synthetic path - but fed with
+    real pixel values read directly from disk. No synthetic data generation
+    is involved anywhere in this function.
     """
-    
-    renderer = SARBackscatterRenderer(width=512, height=512)
-    
-    # Terrain seed is based on bounds (shared by both before/after calls for a
-    # given search) so the pair looks like the same place; fall back to scene_id
-    # when bounds are unavailable.
-    if bounds:
-        terrain_seed_str = f"{bounds.get('north')}|{bounds.get('south')}|{bounds.get('east')}|{bounds.get('west')}"
-    else:
-        terrain_seed_str = scene_id
-    terrain_rng = np.random.RandomState(_seed_from_string(terrain_seed_str))
-    
-    # Generate synthetic NISAR backscatter
-    backscatter = renderer._generate_synthetic_nisar_data(rng=terrain_rng)
-    
-    # Render visualization
-    if scene_type == "pre-flood":
-        title = f"Pre-Flood Baseline (Scene: {scene_id})"
-        img = renderer.render_sar_backscatter(
-            backscatter_db=backscatter,
-            title=title,
-            colormap="grayscale"
-        )
-    else:
-        title = f"Post-Flood Crisis (Scene: {scene_id})"
-        # Flood region position/size/intensity vary per scene+location instead of
-        # always being the same fixed rectangle
-        flood_rng = np.random.RandomState(_seed_from_string(f"{terrain_seed_str}|{scene_id}"))
-        fx = int(flood_rng.uniform(0.15, 0.6) * renderer.width)
-        fy = int(flood_rng.uniform(0.15, 0.6) * renderer.height)
-        fw = int(flood_rng.uniform(80, 220))
-        fh = int(flood_rng.uniform(80, 220))
-        flood_intensity = flood_rng.uniform(5, 12)
+    import rasterio
 
-        flood_backscatter = backscatter.copy()
-        flood_backscatter[fy:fy + fh, fx:fx + fw] -= flood_intensity
-        flood_mask = (flood_backscatter < (backscatter - 3))
-        
-        img = renderer.render_sar_backscatter(
-            backscatter_db=flood_backscatter,
-            title=title,
-            colormap="grayscale",
-            inundation_mask=flood_mask.astype(np.float32)
-        )
-    
-    # Convert to base64 data URL
+    with rasterio.open(tif_path) as src:
+        backscatter_db = src.read(1).astype(np.float64)
+
+    inundation_mask = None
+    if inundation_mask_path:
+        with rasterio.open(inundation_mask_path) as src:
+            inundation_mask = src.read(1).astype(np.float32)
+
+    renderer = SARBackscatterRenderer(width=backscatter_db.shape[1], height=backscatter_db.shape[0])
+    img = renderer.render_sar_backscatter(
+        backscatter_db=backscatter_db,
+        title=title,
+        colormap=colormap,
+        inundation_mask=inundation_mask,
+    )
     return renderer.to_base64_png(img)
 
 

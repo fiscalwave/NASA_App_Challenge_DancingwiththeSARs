@@ -36,6 +36,118 @@ def compute_observation_age_days(acquisition_iso: Optional[str]) -> Optional[flo
         return None
 
 
+def compute_detection_confidence(
+    change_statistics: Dict[str, Any],
+    classification_statistics: Dict[str, Any],
+    geometry_compatible: bool,
+    observation_age_days: Optional[float],
+) -> Dict[str, Any]:
+    """
+    Explainable, rule-based detection-confidence assessment (replaces the
+    previous SHA256-hash-derived fake confidence score/quality flags).
+
+    Every input here is a REAL, already-computed Phase 5 statistic:
+    - std_change_db: real backscatter noise level between the before/after
+      pair (empirically, genuinely compatible pairs measured ~0.8-0.9 dB vs.
+      ~2.5 dB for a genuinely incompatible pair in this project's own testing)
+    - candidate_pixels: real count of pixels that passed the change threshold
+    - geometry_compatible: real track/frame/pass-direction comparison
+    - observation_age_days: real elapsed time since the actual acquisition
+
+    No atmospheric-effects or layover/shadow estimate is produced: this
+    project has no real per-pixel atmospheric or terrain-geometry model to
+    derive those from, so inventing plausible-looking values for them would
+    be exactly the kind of fabrication this project explicitly forbids.
+    """
+    score = 50.0
+    checks = []
+
+    # Check 1: acquisition geometry compatibility (real track/frame/pass check)
+    if geometry_compatible:
+        score += 30
+    else:
+        score -= 20
+    checks.append({
+        "label": "Compatible Acquisition Geometry",
+        "pass": geometry_compatible,
+        "explanation": (
+            "Before/after acquisitions share the same track, frame, and pass direction."
+            if geometry_compatible
+            else "Before/after acquisitions have different look geometry - some detected "
+                 "change may be geometric rather than a real surface change."
+        ),
+    })
+
+    # Check 2: backscatter noise level (real std of the change signal)
+    std_db = change_statistics.get("std_change_db")
+    if std_db is not None and std_db <= 1.5:
+        score += 15
+        noise_pass = True
+    elif std_db is not None:
+        score -= 10
+        noise_pass = False
+    else:
+        noise_pass = False
+    checks.append({
+        "label": "Low Backscatter Noise",
+        "pass": noise_pass,
+        "value_db": std_db,
+        "explanation": (
+            f"Change signal std. dev. is {std_db:.2f} dB."
+            if std_db is not None
+            else "Change signal noise level could not be determined."
+        ),
+    })
+
+    # Check 3: observation freshness (real elapsed time since acquisition)
+    if observation_age_days is None:
+        age_pass = False
+    elif observation_age_days <= 14:
+        score += 10
+        age_pass = True
+    else:
+        score -= 10
+        age_pass = False
+    checks.append({
+        "label": "Recent Observation",
+        "pass": age_pass,
+        "observation_age_days": observation_age_days,
+        "explanation": (
+            f"Detection is {observation_age_days:.1f} day(s) old."
+            if observation_age_days is not None
+            else "Acquisition date could not be determined."
+        ),
+    })
+
+    # Check 4: whether any real candidate-change pixels were actually found
+    candidate_pixels = classification_statistics.get("possible_flood_pixels", 0)
+    signal_pass = candidate_pixels > 0
+    checks.append({
+        "label": "Candidate Change Signal Detected",
+        "pass": signal_pass,
+        "pixel_count": candidate_pixels,
+        "explanation": (
+            f"{candidate_pixels} pixel(s) passed the backscatter-change threshold."
+            if signal_pass
+            else "No pixels passed the backscatter-change threshold in this AOI."
+        ),
+    })
+
+    confidence = round(max(0.0, min(100.0, score)), 1)
+
+    return {
+        "confidence": confidence,
+        "quality_checks": checks,
+        "methodology": (
+            "Confidence is a transparent, rule-based score derived entirely from real "
+            "Phase 5 change-detection statistics (acquisition geometry match, "
+            "backscatter noise level, observation age, and candidate-pixel count) - "
+            "not a statistical probability and not derived from any atmospheric or "
+            "terrain-layover model, which this project does not currently compute."
+        ),
+    }
+
+
 def compute_priority(
     inundation_area_km2: float,
     infrastructure_categories: Dict[str, Any],

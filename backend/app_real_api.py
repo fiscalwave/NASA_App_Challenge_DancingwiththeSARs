@@ -21,12 +21,13 @@ import asf_search
 # Add backend directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Import imagery handler
+# Import imagery handler (real-data GeoTIFF-to-PNG rendering only - the
+# previous synthetic/fabricated visualization path has been removed)
 try:
-    from imagery_handler import create_sar_visualization
+    from imagery_handler import render_real_sar_layer
 except ImportError as e:
     print(f"Warning: Could not import imagery_handler: {e}")
-    create_sar_visualization = None
+    render_real_sar_layer = None
 
 # Import Phase 4 real-data discovery/download pipeline (dormant app/ package,
 # now wired into the live API additively - does not replace /api/search)
@@ -61,12 +62,13 @@ except ImportError as e:
 # additive, built on top of Phase 5's real change-detection output
 try:
     from app.analysis.infrastructure_impact import compute_infrastructure_impact
-    from app.analysis.priority import compute_priority, compute_observation_age_days
+    from app.analysis.priority import compute_priority, compute_observation_age_days, compute_detection_confidence
 except ImportError as e:
     print(f"Warning: Could not import Phase 6 analysis pipeline: {e}")
     compute_infrastructure_impact = None
     compute_priority = None
     compute_observation_age_days = None
+    compute_detection_confidence = None
 
 
 # Load environment variables from .env (in backend directory)
@@ -214,26 +216,6 @@ class SearchResponse(BaseModel):
     scenes: List[Scene]
 
 
-class ProcessRequest(BaseModel):
-    """Flood detection processing request."""
-    before_scene_id: str
-    after_scene_id: str
-    bounds: Dict[str, float]
-    flood_threshold_db: float = -2.0
-    water_threshold_db: float = -15.0
-
-
-class AnalysisResult(BaseModel):
-    """Analysis result with flood detection metrics."""
-    status: str
-    before_scene: str
-    after_scene: str
-    flood_area_km2: float
-    water_area_km2: float
-    confidence: float
-    affected_locations: List[Dict[str, Any]]
-
-
 # ============================================================================
 # PHASE 4 MODELS: Intelligent discovery & efficient download (real data only)
 # ============================================================================
@@ -365,39 +347,15 @@ def search_asf_nisar_data(bounds: Dict[str, float], start_date: str, end_date: s
             print(f"  Found {len(results)} Sentinel-1 scenes (any level)")
         
         if len(results) == 0:
-            # DEMO: Return sample Sentinel-1 data to show application functionality
-            print(f"  No real data found via ASF API. Providing DEMO sample data for demonstration...")
-            
-            demo_scenes = [
-                Scene(
-                    id=f"S1A_IW_GRDH_1SDV_20240905T053622_20240905T053647_054857_06A51B_84CC",
-                    datetime="2024-09-05T05:36:22Z",
-                    polarization="VV/VH",
-                    processing_level="GRD_HD",
-                    orbit=54857,
-                    bounds=bounds.copy()
-                ),
-                Scene(
-                    id=f"S1B_IW_GRDH_1SDV_20240829T040447_20240829T040512_032568_03EBCB_4A2D",
-                    datetime="2024-08-29T04:04:47Z",
-                    polarization="VV/VH",
-                    processing_level="GRD_HD",
-                    orbit=32568,
-                    bounds=bounds.copy()
-                ),
-                Scene(
-                    id=f"S1A_IW_GRDH_1SDV_20240824T053622_20240824T053647_054782_06A1BB_C3A1",
-                    datetime="2024-08-24T05:36:22Z",
-                    polarization="VV/VH",
-                    processing_level="GRD_HD",
-                    orbit=54782,
-                    bounds=bounds.copy()
-                ),
-            ]
-            print(f"  Providing {len(demo_scenes)} demo Sentinel-1 scenes")
-            print(f"  NOTE: This is sample data for demonstration purposes")
-            print(f"  To retrieve real data, ensure Earthdata credentials are properly configured")
-            return demo_scenes
+            # Honest failure: no real SAR data was found for this area/date range
+            # in any of the ASF-indexed collections we tried (NISAR GCOV,
+            # Sentinel-1 GRD_HD, Sentinel-1 any level). Never substitute
+            # fabricated/demo scenes - raise so the caller can report this
+            # truthfully to the user.
+            raise ValueError(
+                f"No real SAR scenes (NISAR or Sentinel-1) found from ASF for this area "
+                f"({west}, {south}, {east}, {north}) and date range ({start_date} to {end_date})."
+            )
         
         # Convert ASF results to Scene objects
         scenes = []
@@ -479,70 +437,8 @@ def search_asf_nisar_data(bounds: Dict[str, float], start_date: str, end_date: s
     except Exception as e:
         error_msg = f"ASF API search error: {str(e)}"
         print(f"ERROR: {error_msg}")
-        
-        # For 2026 dates (NISAR era), generate synthetic NISAR data instead of failing
-        if '2026' in start_date or '2026' in end_date:
-            print(f"Detected 2026 date range - generating synthetic NISAR GCOV data...")
-            from datetime import datetime, timedelta
-            
-            try:
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                
-                nisar_scenes = []
-                current_dt = start_dt
-                scene_count = 0
-                
-                while current_dt <= end_dt and scene_count < 12:
-                    orbit = 1000 + (scene_count * 50)
-                    scene_id = f"NISAR_L2_GCOV_VV_{current_dt.strftime('%Y%m%dT%H%M%S')}_[{orbit:05d}]"
-                    
-                    scene = Scene(
-                        id=scene_id,
-                        datetime=current_dt.isoformat() + 'Z',
-                        polarization="VV",
-                        processing_level="GCOV",
-                        orbit=orbit,
-                        bounds=bounds.copy()
-                    )
-                    nisar_scenes.append(scene)
-                    print(f"  Generated NISAR scene {scene_count+1}: {scene_id}")
-                    
-                    current_dt += timedelta(days=11)
-                    scene_count += 1
-                
-                if nisar_scenes:
-                    print(f"SUCCESS: Generated {len(nisar_scenes)} synthetic NISAR scenes for 2026 era")
-                    return nisar_scenes
-            except Exception as syn_err:
-                print(f"  Failed to generate synthetic data: {syn_err}")
-        
+        # No synthetic/fabricated fallback - report the real failure honestly.
         raise ValueError(error_msg)
-
-
-def _compute_quality_metrics(seed_str: str) -> Dict[str, Any]:
-    """Derive deterministic, location-specific confidence & quality flags from a
-    seed string (e.g. scene ids + search bounds), so repeated searches for the
-    same area/scenes return consistent results while different searches return
-    different, realistic-looking values instead of a hardcoded constant."""
-    digest = hashlib.sha256(seed_str.encode('utf-8')).hexdigest()
-
-    confidence = 65.0 + (int(digest[0:4], 16) % 3200) / 100.0  # 65.00 - 96.99
-    geometric_accuracy = 'high' if int(digest[4:6], 16) % 10 < 7 else 'medium'
-    atmospheric_effects = 'low' if int(digest[6:8], 16) % 10 < 6 else 'moderate'
-    layover_val = int(digest[8:10], 16) % 10
-    layover_shadow = 'low' if layover_val < 5 else ('moderate' if layover_val < 8 else 'high')
-    coherence = 0.55 + (int(digest[10:12], 16) % 40) / 100.0  # 0.55 - 0.94
-
-    return {
-        'confidence': round(confidence, 1),
-        'quality_flags': {
-            'geometric_accuracy': geometric_accuracy,
-            'atmospheric_effects': atmospheric_effects,
-            'layover_shadow': layover_shadow
-        },
-        'coherence': round(coherence, 2)
-    }
 
 
 # ============================================================================
@@ -564,8 +460,10 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "search": "POST /api/search",
-            "analyze": "POST /api/analyze",
-            "export": "POST /api/export",
+            "discover_v2": "POST /api/v2/discover",
+            "download_v2": "POST /api/v2/download/start",
+            "analyze_v2": "POST /api/v2/analyze",
+            "impact_v2": "POST /api/v2/analyze/{analysis_id}/impact",
             "health": "GET /health"
         }
     }
@@ -583,8 +481,10 @@ async def api_info():
         "docs": "/docs",
         "endpoints": {
             "search": "POST /api/search",
-            "analyze": "POST /api/analyze",
-            "export": "POST /api/export",
+            "discover_v2": "POST /api/v2/discover",
+            "download_v2": "POST /api/v2/download/start",
+            "analyze_v2": "POST /api/v2/analyze",
+            "impact_v2": "POST /api/v2/analyze/{analysis_id}/impact",
             "health": "GET /health"
         }
     }
@@ -633,151 +533,12 @@ async def search_scenes(request: SearchRequest) -> SearchResponse:
         )
 
 
-@app.post("/api/analyze", response_model=AnalysisResult, tags=["Analysis"])
-async def analyze_flood_change(request: ProcessRequest) -> AnalysisResult:
-    """
-    Analyze backscatter change between two NISAR GCOV scenes.
-    
-    Detects:
-    - New inundation (negative backscatter change)
-    - Wetland expansion
-    - Exposed infrastructure
-    
-    Note: This is a placeholder. Real implementation requires GDAL/rasterio for geospatial processing.
-    """
-    try:
-        if not request.before_scene_id or not request.after_scene_id:
-            raise ValueError("Both before and after scene IDs are required")
-        
-        # Placeholder analysis result
-        return AnalysisResult(
-            status="success",
-            before_scene=request.before_scene_id,
-            after_scene=request.after_scene_id,
-            flood_area_km2=0.0,
-            water_area_km2=0.0,
-            confidence=0.0,
-            affected_locations=[]
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/export", tags=["Export"])
-async def export_results(request: Dict[str, Any]):
-    """
-    Export analysis results as GeoTIFF, GeoJSON, or PDF.
-    
-    Note: This is a placeholder endpoint.
-    """
-    try:
-        export_format = request.get("format", "geojson")
-        
-        if export_format not in ["geotiff", "geojson", "pdf"]:
-            raise ValueError(f"Unsupported export format: {export_format}")
-        
-        return {
-            "status": "success",
-            "format": export_format,
-            "message": f"Export to {export_format.upper()} generated successfully"
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================================
-# IMAGERY VISUALIZATION ENDPOINTS (For Before/After Comparison)
+# IMAGERY VISUALIZATION (real before/after/change rendering from Phase 5
+# GeoTIFF output - the previous synthetic/procedurally-generated visualization
+# path has been removed entirely; see /api/v2/analyze/{analysis_id}/visual/*)
 # ============================================================================
-
-@app.get("/api/imagery/scene/{scene_id}", tags=["Imagery"])
-async def get_scene_imagery(scene_id: str, scene_type: str = "post-flood"):
-    """
-    Get SAR backscatter visualization for a NISAR scene.
-    
-    This endpoint generates a visualization of the SAR backscatter data
-    for display in the before/after swipe comparison view.
-    
-    Args:
-        scene_id: Scene identifier (e.g., "NISAR_2026-08-22_001")
-        scene_type: Type of scene - "pre-flood" or "post-flood"
-    
-    Returns:
-        JSON with base64-encoded PNG image data URL
-    """
-    try:
-        if not create_sar_visualization:
-            raise RuntimeError("Imagery handler not available")
-        
-        # Generate SAR visualization
-        image_data_url = create_sar_visualization(scene_id, scene_type)
-        
-        return {
-            "status": "success",
-            "scene_id": scene_id,
-            "scene_type": scene_type,
-            "image": image_data_url,
-            "format": "base64_png"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Imagery generation error: {str(e)}")
-
-
-@app.post("/api/imagery/comparison", tags=["Imagery"])
-async def get_scene_comparison(request: Dict[str, Any]):
-    """
-    Get before/after SAR imagery for swipe comparison view.
-    
-    Returns both pre-flood and post-flood visualizations that can be
-    displayed side-by-side in the browser swipe interface.
-    
-    Request JSON:
-        {
-            "before_scene_id": "NISAR_2026-08-22_001",
-            "after_scene_id": "NISAR_2026-08-29_001",
-            "bounds": {north, south, east, west}
-        }
-    
-    Returns:
-        JSON with before_image and after_image data URLs
-    """
-    try:
-        if not create_sar_visualization:
-            raise RuntimeError("Imagery handler not available")
-        
-        before_scene_id = request.get("before_scene_id", "unknown_before")
-        after_scene_id = request.get("after_scene_id", "unknown_after")
-        bounds = request.get("bounds") or {}
-        
-        # Generate before visualization
-        before_image = create_sar_visualization(before_scene_id, "pre-flood", bounds=bounds)
-        
-        # Generate after visualization with flood overlay
-        after_image = create_sar_visualization(after_scene_id, "post-flood", bounds=bounds)
-        
-        # Derive confidence/quality metrics from the actual scene ids + search
-        # bounds so different locations/dates produce different (but repeatable)
-        # results instead of a fixed constant
-        metrics_seed = f"{before_scene_id}|{after_scene_id}|{bounds.get('north')}|{bounds.get('south')}|{bounds.get('east')}|{bounds.get('west')}"
-        metrics = _compute_quality_metrics(metrics_seed)
-        
-        return {
-            "status": "success",
-            "before_scene_id": before_scene_id,
-            "after_scene_id": after_scene_id,
-            "before_image": before_image,
-            "after_image": after_image,
-            "confidence": metrics['confidence'],
-            "quality_flags": metrics['quality_flags'],
-            "coherence": metrics['coherence'],
-            "message": "NISAR SAR backscatter visualizations for swipe comparison"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Comparison generation error: {str(e)}")
-
 
 # ============================================================================
 # PHASE 4: INTELLIGENT DATA DISCOVERY & EFFICIENT DOWNLOAD (real data only)
@@ -958,6 +719,20 @@ async def analyze_real_change(request: AnalyzeRequest):
         )
         change_stats = ChangeDetectionEngine.calculate_change_statistics(change)
 
+        # Real, explainable detection-confidence assessment (replaces the
+        # previous hash-derived fake confidence/quality-flags system)
+        acquisition_time = (
+            _parse_granule_acquisition_time(request.after_granule_id)
+            if _parse_granule_acquisition_time else None
+        )
+        observation_age_days = (
+            compute_observation_age_days(acquisition_time) if compute_observation_age_days else None
+        )
+        detection_confidence = (
+            compute_detection_confidence(change_stats, classification_stats, geometry_compatible, observation_age_days)
+            if compute_detection_confidence else None
+        )
+
         result_dir.mkdir(parents=True, exist_ok=True)
 
         layers = {
@@ -999,10 +774,17 @@ async def analyze_real_change(request: AnalyzeRequest):
                 "direction. Backscatter differences may partly reflect different SAR "
                 "look geometry rather than real surface change. Treat results as lower confidence."
             ),
+            "after_granule_acquisition_time": acquisition_time,
+            "observation_age_days": observation_age_days,
+            "detection_confidence": detection_confidence,
             "layers": {name: f"/api/v2/analyze/{analysis_id}/layer/{name}.tif" for name in layers},
             "geojson": {
                 name: f"/api/v2/analyze/{analysis_id}/geojson/{name}.geojson"
                 for name in ("possible_flood", "persistent_water")
+            },
+            "visual": {
+                "before": f"/api/v2/analyze/{analysis_id}/visual/before",
+                "after": f"/api/v2/analyze/{analysis_id}/visual/after",
             },
         }
 
@@ -1033,6 +815,42 @@ async def get_analysis_geojson(analysis_id: str, layer_name: str):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Layer not found")
     return FileResponse(file_path, media_type="application/geo+json")
+
+
+@app.get("/api/v2/analyze/{analysis_id}/visual/{layer}", tags=["Analysis v2"])
+async def get_analysis_visual(analysis_id: str, layer: str):
+    """
+    Render a real before/after SAR backscatter layer from a completed
+    analysis as a viewable PNG, for the frontend's swipe-comparison view.
+
+    Reads the actual before.tif/after.tif produced by /api/v2/analyze (real
+    pixel values from the downloaded NISAR granules) and colorizes them with
+    the same rendering code previously used for synthetic imagery - but fed
+    with real data. The 'after' layer additionally overlays the real
+    possible_flood.tif classification mask. No synthetic/procedurally
+    generated imagery is produced.
+    """
+    if layer not in ("before", "after"):
+        raise HTTPException(status_code=400, detail="layer must be 'before' or 'after'")
+    if render_real_sar_layer is None:
+        raise HTTPException(status_code=503, detail="Imagery renderer not available")
+
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    tif_path = result_dir / f"{layer}.tif"
+    if not tif_path.exists():
+        raise HTTPException(status_code=404, detail=f"Analysis '{analysis_id}' or layer '{layer}' not found")
+
+    flood_mask_path = result_dir / "possible_flood.tif"
+    try:
+        image_data_url = render_real_sar_layer(
+            str(tif_path),
+            title=f"{'Pre-Flood' if layer == 'before' else 'Post-Flood'} NISAR Backscatter (Real Data)",
+            colormap="grayscale",
+            inundation_mask_path=str(flood_mask_path) if layer == "after" and flood_mask_path.exists() else None,
+        )
+        return {"status": "success", "analysis_id": analysis_id, "layer": layer, "image": image_data_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Rendering error: {str(e)}")
 
 
 # ============================================================================

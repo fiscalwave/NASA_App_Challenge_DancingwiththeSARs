@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <!-- Phase 2 Libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode.js/1.5.3/qrcode.min.js"></script>
@@ -1035,27 +1034,34 @@
         <!-- PHASE 2A: AFFECTED AREA ESTIMATOR -->
         <div class="area-estimator-card" id="areaEstimatorCard" style="display: none;">
             <h3>Affected Area Analysis</h3>
-            
+
             <div class="metric-row">
-                <span class="label">Flooded Area:</span>
+                <span class="label">Flooded Area (real, from NISAR backscatter change):</span>
                 <span class="value" id="floodedAreaValue">0 km²</span>
             </div>
-            
+
+            <div class="metric-row">
+                <span class="label">Priority Level:</span>
+                <span class="value" id="priorityValue">-</span>
+            </div>
+
             <div class="metric-row">
                 <span class="label">Affected Population:</span>
                 <span class="value" id="affectedPopValue">0 people</span>
             </div>
-            
+
             <div class="metric-row">
                 <span class="label">Damage Estimate (Low):</span>
                 <span class="value" id="damageLowValue">$0M</span>
             </div>
-            
+
             <div class="metric-row">
                 <span class="label">Damage Estimate (High):</span>
                 <span class="value" id="damageHighValue">$0M</span>
             </div>
-            
+
+            <p id="areaEstimatorNote" style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.5rem;"></p>
+
             <div class="infrastructure-summary">
                 <div class="asset-count">
                     <div>
@@ -1168,29 +1174,17 @@
         // Map initialization
         let map, locationCircle, locationMarker, floodOverlay;
 
-        // Holds the parameters of the current search so downstream calculations
-        // (flood extent, affected area, confidence, exports) are all derived from
-        // the ACTUAL searched location/radius/dates instead of fixed placeholder
-        // values that never changed between searches.
+        // Holds the parameters of the current search (location/radius/dates,
+        // plus the real analysis_id and fetched flood GeoJSON once a real
+        // analysis completes) so confidence display and exports are derived
+        // from the ACTUAL completed analysis rather than placeholder values.
         let currentSearchContext = null;
 
-        // Deterministic pseudo-random helpers: the same seed string always
-        // produces the same result (so repeating a search is stable), but
-        // different locations/radii/dates produce different results.
-        function hashSeed(str) {
-            let hash = 0;
-            for (let i = 0; i < str.length; i++) {
-                hash = (hash << 5) - hash + str.charCodeAt(i);
-                hash |= 0;
-            }
-            return Math.abs(hash);
-        }
-
-        function seededRandom(seedStr, salt = 0) {
-            const hash = hashSeed(seedStr + '|' + salt);
-            const x = Math.sin(hash) * 10000;
-            return x - Math.floor(x);
-        }
+        // Incremented on every new search and on Reset, so a slow/stale
+        // in-flight real analysis (discovery/download/analysis/impact can
+        // take minutes for a multi-GB real download) cannot clobber the UI
+        // after the user has started a newer search or clicked Reset.
+        let searchGeneration = 0;
 
         function initMap() {
             map = L.map('map').setView([45.4408, 12.3155], 12);
@@ -1200,89 +1194,49 @@
             }).addTo(map);
         }
 
-        // Function to add inundation overlay to the map
-        function addFloodOverlay(lat, lon, radiusKm) {
-            // Remove existing flood overlay
+        // Load and render the REAL detected flood polygon (produced by the
+        // backend's Phase 5 change-detection pipeline from actual NISAR
+        // backscatter data) as a GeoJSON overlay on the map. Replaces the
+        // previous procedurally-generated fake flood-zone circles.
+        async function renderRealFloodOverlay(geojsonUrl) {
             if (floodOverlay) {
                 map.removeLayer(floodOverlay);
+                floodOverlay = null;
             }
 
-            // Flood zone extent varies per search (location + radius + dates) via a
-            // deterministic seed, instead of always using the same fixed multiplier
-            // regardless of where/when the user searched.
-            const seedStr = (currentSearchContext && currentSearchContext.seedStr) || `${lat}|${lon}|${radiusKm}`;
-            const severity1 = 0.6 + seededRandom(seedStr, 1) * 0.7; // 0.6x - 1.3x
-            const severity2 = 0.6 + seededRandom(seedStr, 2) * 0.7;
+            try {
+                const response = await fetch(geojsonUrl);
+                if (!response.ok) throw new Error(`Could not load flood overlay (HTTP ${response.status})`);
+                const geojson = await response.json();
 
-            // Create flood affected areas (simulated based on search radius)
-            // In production, this would come from actual NISAR backscatter analysis
-            const floodZones = [
-                {
-                    lat: lat + (radiusKm / 111) * 0.3,
-                    lon: lon - (radiusKm / 111) * 0.2,
-                    radius: radiusKm * 500 * severity1  // meters
-                },
-                {
-                    lat: lat - (radiusKm / 111) * 0.25,
-                    lon: lon + (radiusKm / 111) * 0.3,
-                    radius: radiusKm * 400 * severity2
+                if (!geojson.features || geojson.features.length === 0) {
+                    console.log('No possible-flood polygons were produced for this AOI/thresholds.');
+                    return;
                 }
-            ];
 
-            // Store the actual zones for this search so calculateAffectedArea()
-            // and the exports can derive real numbers from them
-            if (currentSearchContext) {
-                currentSearchContext.floodZones = floodZones;
+                floodOverlay = L.geoJSON(geojson, {
+                    style: {
+                        color: '#ff6b00',
+                        weight: 1,
+                        fillColor: '#ff6b00',
+                        fillOpacity: 0.45
+                    }
+                }).addTo(map);
+
+                map.fitBounds(floodOverlay.getBounds(), { padding: [50, 50], maxZoom: 15 });
+            } catch (error) {
+                console.error('Could not load real flood overlay:', error);
             }
-
-            // Create a feature group for flood zones
-            floodOverlay = L.featureGroup();
-
-            floodZones.forEach((zone, index) => {
-                // Add flood area as a semi-transparent orange circle
-                const circle = L.circle([zone.lat, zone.lon], {
-                    radius: zone.radius,
-                    color: '#ff6b00',           // Neon orange
-                    fillColor: '#ff6b00',
-                    fillOpacity: 0.3,
-                    weight: 2,
-                    dashArray: '5, 5'
-                });
-
-                circle.bindPopup(`
-                    <div style="font-family: Arial; font-size: 12px;">
-                        <strong>Flood Zone ${index + 1}</strong><br>
-                        Affected Area: ~${(zone.radius / 1000).toFixed(1)} km radius<br>
-                        Detection Status: High Confidence<br>
-                        Backscatter Change: Strong negative
-                    </div>
-                `);
-
-                floodOverlay.addLayer(circle);
-            });
-
-            // Add flood label markers
-            floodZones.forEach((zone, index) => {
-                const marker = L.marker([zone.lat, zone.lon], {
-                    icon: L.divIcon({
-                        className: 'flood-label-icon',
-                        html: `<div style="background: #ff6b00; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; white-space: nowrap;">INUNDATION ZONE ${index + 1}</div>`,
-                        iconSize: [150, 30],
-                        iconAnchor: [75, 15]
-                    })
-                });
-
-                floodOverlay.addLayer(marker);
-            });
-
-            // Add to map
-            floodOverlay.addTo(map);
 
             return floodOverlay;
         }
 
         // Reset all fields and all result/analysis state back to a clean slate
         function resetAllFields() {
+            // Invalidate any in-flight real discovery/download/analysis workflow
+            // so a slow background operation cannot overwrite this reset later.
+            searchGeneration++;
+
             document.getElementById('locationInput').value = '';
             document.getElementById('radiusInput').value = '10';
             document.getElementById('startDate').value = '2025-01-01';
@@ -1412,7 +1366,9 @@
             `;
         }
 
-        // Search function
+        // PHASE 7: Real NISAR discovery -> download -> change-detection -> impact
+        // pipeline (replaces the previous /api/search-driven flow, which could
+        // silently fall back to fabricated demo scenes and synthetic imagery).
         document.getElementById('searchBtn').addEventListener('click', async () => {
             const location = document.getElementById('locationInput').value.trim();
 
@@ -1433,23 +1389,154 @@
             const startDate = document.getElementById('startDate').value;
             const endDate = document.getElementById('endDate').value;
 
-            try {
-                const response = await fetch('/api/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        bounds: bounds,
-                        start_date: startDate,
-                        end_date: endDate
-                    })
-                });
+            const lat = locationCircle._latlng.lat;
+            const lon = locationCircle._latlng.lng;
+            const radius = parseInt(document.getElementById('radiusInput').value) || 10;
+            const locationText = location;
 
-                const data = await response.json();
-                displayResults(data.scenes || []);
+            currentSearchContext = { lat, lon, radiusKm: radius, locationText, startDate, endDate, bounds };
+            const myGeneration = ++searchGeneration;
+
+            try {
+                await runRealAnalysisWorkflow(bounds, startDate, endDate, myGeneration);
             } catch (error) {
-                console.error('Search error:', error);
+                if (myGeneration !== searchGeneration) return; // superseded by a newer search/reset
+                console.error('Real analysis workflow error:', error);
+                hideGlobalStatus();
+                alert(`Could not complete real NISAR analysis: ${error.message}`);
             }
         });
+
+        function showGlobalStatus(message) {
+            const section = document.getElementById('resultsSection');
+            section.style.display = 'block';
+            const tbody = document.getElementById('sceneTableBody');
+            tbody.innerHTML = `<tr><td colspan="3" class="placeholder-text">${message}</td></tr>`;
+            section.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function hideGlobalStatus() {
+            // no-op placeholder: status is shown inline in the acquisitions
+            // table, which gets replaced once real results are populated.
+        }
+
+        // Poll a real, byte-accurate download until it completes, surfacing
+        // real progress (never a fabricated/simulated progress bar). Stops
+        // silently if a newer search/reset has superseded this one.
+        async function downloadGranuleAndWait(meta, label, generation) {
+            const startResp = await fetch('/api/v2/download/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    granule_id: meta.granule_id,
+                    download_url: meta.download_url,
+                    expected_size_mb: meta.size_mb
+                })
+            });
+            let status = await startResp.json();
+            if (!startResp.ok) {
+                throw new Error(status.detail || `Could not start download for ${meta.granule_id}`);
+            }
+
+            while (status.status !== 'complete') {
+                if (generation !== searchGeneration) return; // superseded
+                if (status.status === 'error') {
+                    throw new Error(`Download failed for ${meta.granule_id}: ${status.error || 'unknown error'}`);
+                }
+                const downloadedMb = (status.downloaded_bytes || 0) / 1e6;
+                const totalMb = (status.total_bytes || meta.size_mb * 1e6) / 1e6;
+                const pct = totalMb > 0 ? Math.round(100 * downloadedMb / totalMb) : 0;
+                showGlobalStatus(`${label}: ${pct}% (${downloadedMb.toFixed(0)} / ${totalMb.toFixed(0)} MB) - real NASA Earthdata download in progress...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                const statusResp = await fetch(`/api/v2/download/status/${encodeURIComponent(meta.granule_id)}`);
+                status = await statusResp.json();
+            }
+        }
+
+        async function runRealAnalysisWorkflow(bounds, startDate, endDate, generation) {
+            showGlobalStatus('Searching NASA CMR for real NISAR L2 GCOV acquisitions...');
+
+            const discoverResp = await fetch('/api/v2/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north },
+                    event_start: startDate,
+                    event_end: endDate,
+                    pre_event_days: 30,
+                    post_event_days: 30
+                })
+            });
+            const discover = await discoverResp.json();
+            if (!discoverResp.ok) {
+                throw new Error(discover.detail || 'Real NISAR discovery failed');
+            }
+            if (generation !== searchGeneration) return; // superseded by a newer search/reset
+
+            const allGranules = [...(discover.pre_event || []), ...(discover.post_event || [])];
+            populateAcquisitionsTable(allGranules);
+
+            if (!discover.compatible_pairs || discover.compatible_pairs.length === 0) {
+                document.getElementById('resultsSection').style.display = 'block';
+                document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+                alert(
+                    'No compatible real NISAR before/after acquisition pairs were found for this area and date range ' +
+                    '(a reliable comparison requires the same track, frame, and pass direction). Found ' +
+                    `${allGranules.length} individual real acquisition(s) - see the table below. ` +
+                    'Try a wider date range or a different location.'
+                );
+                return;
+            }
+
+            const pair = discover.compatible_pairs[0];
+            const beforeMeta = allGranules.find(g => g.granule_id === pair.before);
+            const afterMeta = allGranules.find(g => g.granule_id === pair.after);
+            if (!beforeMeta || !afterMeta) {
+                throw new Error('Internal error: could not resolve compatible pair granule metadata');
+            }
+
+            await downloadGranuleAndWait(beforeMeta, 'Downloading real "before" granule', generation);
+            if (generation !== searchGeneration) return;
+            await downloadGranuleAndWait(afterMeta, 'Downloading real "after" granule', generation);
+            if (generation !== searchGeneration) return;
+
+            showGlobalStatus('Running real NISAR backscatter change detection...');
+            const analyzeResp = await fetch('/api/v2/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    before_granule_id: pair.before,
+                    after_granule_id: pair.after,
+                    polarization: 'HHHH',
+                    bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north }
+                })
+            });
+            const summary = await analyzeResp.json();
+            if (!analyzeResp.ok) {
+                throw new Error(summary.detail || 'Real change-detection analysis failed');
+            }
+            if (generation !== searchGeneration) return;
+
+            showGlobalStatus('Computing real infrastructure impact from OpenStreetMap (this can take up to ~90 seconds)...');
+            let impact = null;
+            try {
+                const impactResp = await fetch(`/api/v2/analyze/${summary.analysis_id}/impact`, { method: 'POST' });
+                impact = await impactResp.json();
+            } catch (impactError) {
+                console.warn('Infrastructure impact unavailable:', impactError);
+            }
+            if (generation !== searchGeneration) return; // superseded - do not render stale results
+
+            currentSearchContext.analysisId = summary.analysis_id;
+            currentSearchContext.confidence = summary.detection_confidence ? summary.detection_confidence.confidence : null;
+
+            // Restore the acquisitions table to show the real discovered
+            // granules (it was temporarily showing status messages during
+            // download/analysis/impact computation)
+            populateAcquisitionsTable(allGranules);
+
+            await displayRealResults(summary, impact);
+        }
 
         function getMapBounds() {
             if (!locationCircle) return null;
@@ -1462,63 +1549,42 @@
             };
         }
 
-        function displayResults(scenes) {
+        // Populate the "Available NISAR Acquisitions" table with the REAL
+        // granules returned by /api/v2/discover (not a fixed/fabricated list).
+        function populateAcquisitionsTable(granules) {
             const tbody = document.getElementById('sceneTableBody');
+            if (!granules || granules.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="3" class="placeholder-text">No real NISAR scenes found for this area and date range</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = granules.map(g => `
+                <tr>
+                    <td>${g.granule_id}</td>
+                    <td>${g.time_start}</td>
+                    <td>Track ${g.track} / Frame ${g.frame} / ${g.pass_direction} - ${g.tier} tier</td>
+                </tr>
+            `).join('');
+        }
+
+        async function displayRealResults(summary, impact) {
             const section = document.getElementById('resultsSection');
 
-            if (scenes.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="3" class="placeholder-text">No scenes found for this area and date range</td></tr>`;
-            } else {
-                tbody.innerHTML = scenes.map(scene => {
-                    // Handle both old and new API formats
-                    const id = scene.id || scene.scene_id || 'Unknown';
-                    const date = scene.datetime || scene.date || 'Unknown';
-                    const description = scene.description || `${scene.processing_level || 'SAR'} Data - Polarization: ${scene.polarization || 'VV/VH'}`;
-                    
-                    return `
-                        <tr>
-                            <td>${id}</td>
-                            <td>${date}</td>
-                            <td>${description}</td>
-                        </tr>
-                    `;
-                }).join('');
-                
-                // Add flood inundation overlay to the map
-                const lat = (locationCircle._latlng.lat);
-                const lon = (locationCircle._latlng.lng);
-                const radius = parseInt(document.getElementById('radiusInput').value) || 10;
-                const locationText = document.getElementById('locationInput').value.trim();
-                const startDate = document.getElementById('startDate').value;
-                const endDate = document.getElementById('endDate').value;
+            await renderRealSwipeView(summary);
+            await renderRealFloodOverlay(summary.geojson.possible_flood);
+            updateConfidenceBadge(summary.detection_confidence);
+            renderRealAffectedArea(summary, impact);
 
-                // Build a fresh search context so all downstream calculations
-                // (flood zones, affected area, confidence, exports) reflect THIS
-                // search's actual location/radius/dates rather than static values
-                const seedStr = `${locationText}|${lat.toFixed(4)}|${lon.toFixed(4)}|${radius}|${startDate}|${endDate}`;
-                currentSearchContext = {
-                    lat, lon, radiusKm: radius, locationText, startDate, endDate,
-                    seedStr,
-                    bounds: getMapBounds(),
-                    floodZones: []
-                };
-
-                addFloodOverlay(lat, lon, radius);
-                
-                // PHASE 1: Show before-after swipe view for first scene
-                if (scenes.length > 0) {
-                    showSwipeView(scenes[0]);
-                }
-                
-                // PHASE 2A: Calculate and show affected area
-                calculateAffectedArea();
-                
-                // PHASE 2B: Show infrastructure layer controls
-                document.getElementById('layerControlsCard').style.display = 'block';
-                
-                // PHASE 2C: Show export menu
-                document.getElementById('exportMenuCard').style.display = 'block';
+            // Store the real flood GeoJSON for honest exports (replaces the
+            // previous circle-approximation export path)
+            try {
+                const geojsonResp = await fetch(summary.geojson.possible_flood);
+                currentSearchContext.realFloodGeoJSON = await geojsonResp.json();
+            } catch (e) {
+                console.warn('Could not cache real flood GeoJSON for export:', e);
             }
+
+            document.getElementById('layerControlsCard').style.display = 'block';
+            document.getElementById('exportMenuCard').style.display = 'block';
 
             section.style.display = 'block';
             section.scrollIntoView({ behavior: 'smooth' });
@@ -1572,213 +1638,143 @@
             }
         }
 
-        // PHASE 1: SHOW SWIPE VIEW WITH REAL NISAR IMAGERY
-        async function showSwipeView(scene) {
+        // PHASE 7: SHOW SWIPE VIEW WITH REAL NISAR IMAGERY (rendered server-side
+        // from actual downloaded GCOV HDF5 data via /api/v2/analyze/{id}/visual/*)
+        async function renderRealSwipeView(summary) {
             const swipeViewCard = document.getElementById('swipeViewCard');
             const swipeBeforeImage = document.getElementById('swipeBeforeImage');
             const swipeAfterImage = document.getElementById('swipeAfterImage');
-            const confidenceBadge = document.getElementById('confidenceBadge');
             const inundationLegend = document.getElementById('inundationLegend');
-            const confidenceScore = document.getElementById('confidenceScore');
 
             if (!swipeViewCard) return;
 
-            // Show the swipe view card
             swipeViewCard.style.display = 'block';
 
-            // Show loading state
             swipeBeforeImage.innerHTML = `
                 <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #cbd5e1; font-size: 1rem;">
                     <div style="text-align: center;">
                         <div style="font-size: 2rem; margin-bottom: 0.5rem;">Processing</div>
-                        <div>Loading Pre-Flood NISAR Imagery...</div>
+                        <div>Rendering real Pre-Flood NISAR backscatter...</div>
                     </div>
                 </div>
             `;
-            
+
             swipeAfterImage.innerHTML = `
                 <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #cbd5e1; font-size: 1rem;">
                     <div style="text-align: center;">
                         <div style="font-size: 2rem; margin-bottom: 0.5rem;">Processing</div>
-                        <div>Loading Post-Flood NISAR Imagery...</div>
+                        <div>Rendering real Post-Flood NISAR backscatter...</div>
                     </div>
                 </div>
             `;
 
             try {
-                // Fetch NISAR SAR backscatter visualizations from backend
-                const sceneId = scene.id || scene.scene_id || `NISAR_${scene.datetime || 'unknown'}`;
-                
-                const response = await fetch('/api/imagery/comparison', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        before_scene_id: sceneId + '_pre',
-                        after_scene_id: sceneId + '_post',
-                        bounds: getMapBounds()
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`API error: ${response.statusText}`);
+                const [beforeResp, afterResp] = await Promise.all([
+                    fetch(summary.visual.before),
+                    fetch(summary.visual.after)
+                ]);
+                if (!beforeResp.ok || !afterResp.ok) {
+                    throw new Error('Could not render real NISAR imagery from the completed analysis');
                 }
+                const beforeData = await beforeResp.json();
+                const afterData = await afterResp.json();
 
-                const data = await response.json();
-
-                // Display before imagery
-                if (data.before_image) {
-                    swipeBeforeImage.style.background = 'transparent';
-                    swipeBeforeImage.innerHTML = `
-                        <img src="${data.before_image}" 
-                             style="width: 100%; height: 100%; object-fit: cover; display: block;" 
-                             alt="Pre-Flood NISAR Backscatter">
-                    `;
-                }
-
-                // Display after imagery
-                if (data.after_image) {
-                    swipeAfterImage.style.background = 'transparent';
-                    swipeAfterImage.innerHTML = `
-                        <img src="${data.after_image}" 
-                             style="width: 100%; height: 100%; object-fit: cover; display: block;" 
-                             alt="Post-Flood NISAR Backscatter with Inundation Overlay">
-                    `;
-                }
-
-                // Show confidence badge with REAL quality metrics from the backend
-                // (derived from this search's scenes + bounds) instead of a fixed
-                // confidence score and static quality-check labels.
-                confidenceBadge.style.display = 'block';
-                updateConfidenceBadge({
-                    confidence: data.confidence != null ? data.confidence : 85,
-                    quality_flags: data.quality_flags || { geometric_accuracy: 'high', atmospheric_effects: 'low', layover_shadow: 'moderate' },
-                    coherence: data.coherence != null ? data.coherence : 0.8
-                });
-                if (currentSearchContext) {
-                    currentSearchContext.confidence = data.confidence != null ? data.confidence : 85;
-                }
-
-                // Show inundation legend
-                inundationLegend.style.display = 'block';
-
-            } catch (error) {
-                console.error('Error loading NISAR imagery:', error);
-                
-                // Fallback to synthetic visualization on error
-                swipeBeforeImage.style.background = 'linear-gradient(135deg, #4a5568 0%, #2d3748 50%, #1a202c 100%)';
+                swipeBeforeImage.style.background = 'transparent';
                 swipeBeforeImage.innerHTML = `
-                    <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #cbd5e1; font-size: 1.1rem; font-weight: 600;">
-                        <div style="text-align: center;">
-                            <div style="font-size: 1rem; color: #ef4444; margin-bottom: 0.5rem;">Error loading imagery</div>
-                            <div style="font-size: 0.9rem; color: #94a3b8;">Pre-Flood SAR Backscatter (Simulated)</div>
-                        </div>
-                    </div>
+                    <img src="${beforeData.image}"
+                         style="width: 100%; height: 100%; object-fit: cover; display: block;"
+                         alt="Pre-Flood NISAR Backscatter (Real Data)">
                 `;
 
-                swipeAfterImage.style.background = 'linear-gradient(135deg, #2d3748 0%, #1a202c 50%, #0f172a 100%)';
+                swipeAfterImage.style.background = 'transparent';
                 swipeAfterImage.innerHTML = `
-                    <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #cbd5e1; font-size: 1.1rem; font-weight: 600;">
-                        <div style="text-align: center;">
-                            <div style="font-size: 1rem; color: #ef4444; margin-bottom: 0.5rem;">Error loading imagery</div>
-                            <div style="font-size: 0.9rem; color: #94a3b8;">Post-Flood SAR + Flood Detection (Simulated)</div>
-                        </div>
-                    </div>
+                    <img src="${afterData.image}"
+                         style="width: 100%; height: 100%; object-fit: cover; display: block;"
+                         alt="Post-Flood NISAR Backscatter with Real Inundation Overlay">
                 `;
 
-                confidenceBadge.style.display = 'block';
-                confidenceScore.textContent = '0%';
                 inundationLegend.style.display = 'block';
+            } catch (error) {
+                console.error('Error rendering real NISAR imagery:', error);
+                swipeBeforeImage.innerHTML = `
+                    <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #ef4444; font-size: 1rem;">
+                        Could not render real imagery: ${error.message}
+                    </div>
+                `;
+                swipeAfterImage.innerHTML = swipeBeforeImage.innerHTML;
             }
 
-            // Smooth scroll to swipe view
             setTimeout(() => {
                 document.getElementById('swipeViewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }, 300);
         }
 
-        // PHASE 1: DISPLAY METADATA TOOLTIPS
-        function updateConfidenceBadge(metadata) {
+        // PHASE 7: DISPLAY REAL, EXPLAINABLE DETECTION-CONFIDENCE ASSESSMENT
+        // (replaces the previous SHA256-hash-derived fake confidence/quality
+        // flags - every check here comes from real Phase 5 statistics)
+        function updateConfidenceBadge(detectionConfidence) {
+            const confidenceBadge = document.getElementById('confidenceBadge');
             const confidenceScore = document.getElementById('confidenceScore');
             const qualityChecks = document.getElementById('qualityChecks');
 
-            if (!confidenceScore || !qualityChecks) return;
+            if (!confidenceBadge || !confidenceScore || !qualityChecks) return;
 
-            // Update confidence score
-            const confidence = metadata.confidence != null ? metadata.confidence : 87;
-            confidenceScore.textContent = Math.round(confidence) + '%';
+            if (!detectionConfidence) {
+                confidenceBadge.style.display = 'none';
+                return;
+            }
 
-            // Update quality checks - label text reflects the ACTUAL flag value
-            // (not a fixed string) so e.g. a 'moderate' or 'high' layover/shadow
-            // reading is shown accurately instead of always saying "Low".
-            const flags = metadata.quality_flags || {};
-            const geoAccuracy = flags.geometric_accuracy || 'medium';
-            const atmosphericEffects = flags.atmospheric_effects || 'moderate';
-            const layoverShadow = flags.layover_shadow || 'moderate';
-            const coherence = metadata.coherence != null ? metadata.coherence : 0.75;
+            confidenceBadge.style.display = 'block';
+            confidenceScore.textContent = Math.round(detectionConfidence.confidence) + '%';
 
-            const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-
-            const checks = [
-                { pass: geoAccuracy === 'high', text: `${capitalize(geoAccuracy)} Geometric Accuracy` },
-                { pass: atmosphericEffects === 'low', text: `${capitalize(atmosphericEffects)} Atmospheric Effects` },
-                { pass: layoverShadow === 'low', text: `${capitalize(layoverShadow)} Layover/Shadow` },
-                { pass: coherence > 0.7, text: coherence > 0.7 ? 'Good Coherence' : 'Reduced Coherence' }
-            ];
-
-            qualityChecks.innerHTML = checks.map(check => `
-                <div class="quality-check ${check.pass ? 'pass' : 'warning'}">
+            qualityChecks.innerHTML = (detectionConfidence.quality_checks || []).map(check => `
+                <div class="quality-check ${check.pass ? 'pass' : 'warning'}" title="${check.explanation}">
                     <span class="quality-icon">${check.pass ? 'OK' : 'Warning'}</span>
-                    <span>${check.text}</span>
+                    <span>${check.label}</span>
                 </div>
             `).join('');
+
+            if (currentSearchContext) {
+                currentSearchContext.confidence = detectionConfidence.confidence;
+            }
         }
 
-        // ========== PHASE 2: AFFECTED AREA ESTIMATOR ==========
-        function calculateAffectedArea() {
-            // Derive the flooded area from the ACTUAL flood zones drawn for this
-            // search (which scale with the real searched location/radius) instead
-            // of a fixed placeholder polygon that never changed between searches.
-            let areaKm2;
-            if (currentSearchContext && currentSearchContext.floodZones && currentSearchContext.floodZones.length > 0) {
-                areaKm2 = currentSearchContext.floodZones.reduce((sum, zone) => {
-                    const radiusKm = zone.radius / 1000;
-                    return sum + Math.PI * radiusKm * radiusKm;
-                }, 0);
-            } else {
-                // Defensive fallback if called before any search has run
-                const polygon = turf.polygon([[
-                    [12.2, 45.4], [12.35, 45.4], [12.35, 45.45], [12.2, 45.45], [12.2, 45.4]
-                ]]);
-                areaKm2 = turf.area(polygon) / 1000000;
+        // ========== PHASE 7: AFFECTED AREA ANALYSIS (real data only) ==========
+        // Renders real flooded area (from Phase 5 change detection) and real
+        // infrastructure counts (from Phase 6 OpenStreetMap intersection).
+        // Population and damage estimates are NOT fabricated: no gridded
+        // population dataset is integrated, so they are honestly reported as
+        // unavailable rather than invented from an area x density formula.
+        function renderRealAffectedArea(summary, impact) {
+            const areaKm2 = summary.classification_statistics.possible_flood_area_km2;
+            document.getElementById('floodedAreaValue').textContent = areaKm2.toFixed(2) + ' km²';
+            document.getElementById('affectedPopValue').textContent = 'Not available';
+            document.getElementById('damageLowValue').textContent = 'N/A';
+            document.getElementById('damageHighValue').textContent = 'N/A';
+
+            const priority = impact && impact.priority;
+            document.getElementById('priorityValue').textContent = priority ? priority.level : 'Unavailable';
+
+            const categories = (impact && impact.infrastructure_impact && impact.infrastructure_impact.categories) || {};
+            const hospitals = categories.hospitals;
+            const settlements = categories.settlements;
+            const roads = categories.roads;
+
+            document.getElementById('hospitalsCount').textContent =
+                (hospitals && hospitals.status === 'ok') ? hospitals.within_flood_count : 'N/A';
+            document.getElementById('settlementsCount').textContent =
+                (settlements && settlements.status === 'ok') ? settlements.within_flood_count : 'N/A';
+            document.getElementById('roadsValue').textContent =
+                (roads && roads.status === 'ok') ? roads.intersecting_length_km.toFixed(2) : 'N/A';
+
+            const note = document.getElementById('areaEstimatorNote');
+            if (note) {
+                note.textContent = 'Population and damage are not estimated: no gridded population/damage dataset is ' +
+                    'integrated. Infrastructure counts reflect live OpenStreetMap data within the detected flood polygon; ' +
+                    '"N/A" means OpenStreetMap did not return data for this category (e.g. mirrors temporarily unavailable).';
             }
-            
-            // Estimate affected population (using approximate density: 300 people/km²)
-            const populationDensity = 300;
-            const affectedPopulation = Math.round(areaKm2 * populationDensity);
-            
-            // Estimate damage (using average $51,000 per km² for developed areas)
-            const damagePerKm2 = 51000;
-            const damageLow = areaKm2 * damagePerKm2 * 0.75;
-            const damageHigh = areaKm2 * damagePerKm2 * 1.5;
-            
-            // Simulate infrastructure counts (would come from OSM spatial join)
-            const hospitalsCount = Math.ceil(areaKm2 * 0.04);  // ~4 per 100 km²
-            const settlementsCount = Math.ceil(areaKm2 * 0.18); // ~18 per 100 km²
-            const roadsKm = areaKm2 * 0.52; // ~52 km per 100 km²
-            
-            // Update UI
-            document.getElementById('floodedAreaValue').textContent = areaKm2.toFixed(1) + ' km²';
-            document.getElementById('affectedPopValue').textContent = affectedPopulation.toLocaleString() + ' people';
-            document.getElementById('damageLowValue').textContent = '$' + (damageLow / 1000000).toFixed(1) + 'M';
-            document.getElementById('damageHighValue').textContent = '$' + (damageHigh / 1000000).toFixed(1) + 'M';
-            document.getElementById('hospitalsCount').textContent = hospitalsCount;
-            document.getElementById('settlementsCount').textContent = settlementsCount;
-            document.getElementById('roadsValue').textContent = roadsKm.toFixed(1);
-            
-            // Show the card
+
             document.getElementById('areaEstimatorCard').style.display = 'block';
-            
-            return { areaKm2, affectedPopulation, damageLow, damageHigh };
         }
 
         // ========== PHASE 2B: INFRASTRUCTURE LAYERS ==========
@@ -2011,52 +2007,40 @@
             alert('OK PDF report downloaded!');
         }
 
-        // Converts a flood zone (lat/lon center + radius in meters) into a real
-        // circular polygon ring of [lon, lat] coordinate pairs, for use in
-        // exported GeoJSON/KML so the exported geometry matches the ACTUAL
-        // searched location instead of a fixed placeholder polygon.
-        function floodZoneToRing(zone) {
-            const radiusKm = zone.radius / 1000;
-            const circle = turf.circle([zone.lon, zone.lat], radiusKm, { units: 'kilometers', steps: 32 });
-            return circle.geometry.coordinates[0];
-        }
-
-        function getExportFloodZones() {
-            if (currentSearchContext && currentSearchContext.floodZones && currentSearchContext.floodZones.length > 0) {
-                return currentSearchContext.floodZones;
-            }
-            // Defensive fallback if exports are triggered before any search
-            return [{ lat: 45.43, lon: 12.27, radius: 2000 }];
+        // Real flood polygon exports (GeoJSON/KML), using the actual detected
+        // possible-flood geometry from Phase 5 change detection - replaces the
+        // previous circle-approximation placeholder export path.
+        function getRealFloodFeatures() {
+            const realGeoJSON = currentSearchContext && currentSearchContext.realFloodGeoJSON;
+            return (realGeoJSON && realGeoJSON.features) || [];
         }
 
         function exportToGeoJson() {
+            const features = getRealFloodFeatures();
+            if (features.length === 0) {
+                alert('No real flood polygon is available to export yet. Run a search and wait for the analysis to complete.');
+                return;
+            }
+
             const location = document.getElementById('locationInput').value || 'Unknown Location';
-            const confidence = (currentSearchContext && currentSearchContext.confidence != null) ? currentSearchContext.confidence : 90;
+            const confidence = (currentSearchContext && currentSearchContext.confidence != null) ? currentSearchContext.confidence : null;
             const areaKm2 = parseFloat(document.getElementById('floodedAreaValue').textContent) || 0;
-            const affectedPopulation = parseInt(document.getElementById('affectedPopValue').textContent.replace(/,/g, '')) || 0;
-            const zones = getExportFloodZones();
 
             const geojsonData = {
                 type: 'FeatureCollection',
-                features: zones.map((zone, index) => ({
-                    type: 'Feature',
+                features: features.map(feature => ({
+                    ...feature,
                     properties: {
-                        type: 'inundation',
-                        zone: index + 1,
+                        ...feature.properties,
                         location: location,
                         confidence: confidence,
-                        area_km2: areaKm2,
-                        affected_population: affectedPopulation,
+                        total_flooded_area_km2: areaKm2,
                         date_created: new Date().toISOString(),
-                        source: 'NISAR GCOV'
-                    },
-                    geometry: {
-                        type: 'Polygon',
-                        coordinates: [floodZoneToRing(zone)]
+                        source: 'NISAR GCOV (real backscatter change detection)'
                     }
                 }))
             };
-            
+
             const dataStr = JSON.stringify(geojsonData, null, 2);
             const dataBlob = new Blob([dataStr], { type: 'application/json' });
             const url = URL.createObjectURL(dataBlob);
@@ -2068,15 +2052,20 @@
         }
 
         function exportToKml() {
-            const location = document.getElementById('locationInput').value || 'Flood Analysis';
-            const zones = getExportFloodZones();
+            const features = getRealFloodFeatures();
+            if (features.length === 0) {
+                alert('No real flood polygon is available to export yet. Run a search and wait for the analysis to complete.');
+                return;
+            }
 
-            const placemarks = zones.map((zone, index) => {
-                const ring = floodZoneToRing(zone);
+            const location = document.getElementById('locationInput').value || 'Flood Analysis';
+
+            const placemarks = features.map((feature, index) => {
+                const ring = feature.geometry.coordinates[0];
                 const coordsText = ring.map(([lon, lat]) => `${lon},${lat},0`).join('\n');
                 return `    <Placemark>
-      <name>Inundation Zone ${index + 1}</name>
-      <description>Flooded Area: ${document.getElementById('floodedAreaValue').textContent}</description>
+      <name>Possible Flood Pixel ${index + 1}</name>
+      <description>Real NISAR backscatter-change detection. Total flooded area: ${document.getElementById('floodedAreaValue').textContent}</description>
       <Polygon>
         <outerBoundaryIs>
           <LinearRing>
