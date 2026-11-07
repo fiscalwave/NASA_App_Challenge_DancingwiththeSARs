@@ -1440,7 +1440,7 @@
 
             while (status.status !== 'complete') {
                 if (generation !== searchGeneration) return; // superseded
-                if (status.status === 'error') {
+                if (status.status === 'error' || status.status === 'failed') {
                     throw new Error(`Download failed for ${meta.granule_id}: ${status.error || 'unknown error'}`);
                 }
                 const downloadedMb = (status.downloaded_bytes || 0) / 1e6;
