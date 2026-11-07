@@ -27,6 +27,17 @@ except ImportError as e:
     print(f"Warning: Could not import imagery_handler: {e}")
     create_sar_visualization = None
 
+# Import Phase 4 real-data discovery/download pipeline (dormant app/ package,
+# now wired into the live API additively - does not replace /api/search)
+try:
+    from app.ingestion.cmr_adapter import CMRAdapter
+    from app.ingestion.download_manager import DownloadManager
+except ImportError as e:
+    print(f"Warning: Could not import discovery/download pipeline: {e}")
+    CMRAdapter = None
+    DownloadManager = None
+
+
 # Load environment variables from .env (in backend directory)
 env_path = Path(__file__).parent / ".env"
 load_dotenv(env_path)
@@ -90,6 +101,32 @@ if not ASF_USERNAME or not ASF_PASSWORD:
 print(f"Configuration loaded successfully")
 print(f"  Earthdata username: {ASF_USERNAME}")
 print(f"  .env file found: {ENV_FILE_FOUND}")
+
+# ============================================================================
+# PHASE 4: REAL-DATA DISCOVERY & DOWNLOAD PIPELINE (additive, /api/v2/*)
+# ============================================================================
+
+GCOV_CACHE_DIR = Path(__file__).parent / "data" / "cache"
+GCOV_SAMPLE_DIR = Path(__file__).parent.parent / "data" / "scenes"
+
+download_manager = None
+if DownloadManager is not None:
+    download_manager = DownloadManager(
+        cache_dir=GCOV_CACHE_DIR,
+        username=ASF_USERNAME,
+        password=ASF_PASSWORD,
+        max_concurrent_downloads=2,
+    )
+    # Register any already-downloaded real GCOV sample files so the dedup
+    # cache is aware of them immediately, without re-downloading or faking status
+    if GCOV_SAMPLE_DIR.exists():
+        for h5_file in GCOV_SAMPLE_DIR.glob("*.h5"):
+            granule_id = h5_file.stem
+            try:
+                download_manager.register_existing_file(granule_id, h5_file)
+                print(f"  Registered existing real GCOV sample: {granule_id}")
+            except Exception as e:
+                print(f"  Warning: could not register {h5_file.name}: {e}")
 
 # Print startup info
 @app.on_event("startup")
@@ -157,6 +194,35 @@ class AnalysisResult(BaseModel):
     water_area_km2: float
     confidence: float
     affected_locations: List[Dict[str, Any]]
+
+
+# ============================================================================
+# PHASE 4 MODELS: Intelligent discovery & efficient download (real data only)
+# ============================================================================
+
+class BoundsModel(BaseModel):
+    """Geographic bounds in EPSG:4326."""
+    west: float
+    south: float
+    east: float
+    north: float
+
+
+class DiscoverRequest(BaseModel):
+    """Intelligent pre/post-event NISAR L2 GCOV discovery request."""
+    bounds: BoundsModel
+    event_start: str  # YYYY-MM-DD
+    event_end: str  # YYYY-MM-DD
+    pre_event_days: int = 30
+    post_event_days: int = 30
+    tiers: Optional[List[str]] = None  # subset/order of VALIDATED/PROVISIONAL/BETA
+
+
+class DownloadStartRequest(BaseModel):
+    """Start (or resume/dedup-skip) a real granule download."""
+    granule_id: str
+    download_url: str
+    expected_size_mb: Optional[float] = None
 
 
 # ============================================================================
@@ -659,6 +725,84 @@ async def get_scene_comparison(request: Dict[str, Any]):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Comparison generation error: {str(e)}")
+
+
+# ============================================================================
+# PHASE 4: INTELLIGENT DATA DISCOVERY & EFFICIENT DOWNLOAD (real data only)
+# ============================================================================
+
+@app.post("/api/v2/discover", tags=["Discovery v2"])
+async def discover_nisar_granules(request: DiscoverRequest):
+    """
+    Real NISAR L2 GCOV discovery for a geographic area and event window.
+
+    Queries NASA CMR directly (metadata-first - no data is downloaded here)
+    across the requested data-maturity tiers (Validated / Provisional / Beta),
+    separately for the pre-event and post-event windows, and flags which
+    before/after granule pairs share compatible acquisition geometry (same
+    track, frame, and pass direction). Returns an empty list - never mock
+    data - if nothing is found for the requested area/dates/tiers.
+    """
+    if CMRAdapter is None:
+        raise HTTPException(status_code=503, detail="Discovery pipeline not available")
+
+    try:
+        bounds_tuple = (
+            request.bounds.west, request.bounds.south,
+            request.bounds.east, request.bounds.north,
+        )
+        event_start = datetime.strptime(request.event_start, "%Y-%m-%d").date()
+        event_end = datetime.strptime(request.event_end, "%Y-%m-%d").date()
+
+        result = CMRAdapter.discover_pre_post_event(
+            bounds_tuple,
+            event_start=event_start,
+            event_end=event_end,
+            pre_event_days=request.pre_event_days,
+            post_event_days=request.post_event_days,
+            tiers=request.tiers,
+        )
+        result["status"] = "success"
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Discovery error: {str(e)}")
+
+
+@app.post("/api/v2/download/start", tags=["Download v2"])
+async def start_granule_download(request: DownloadStartRequest):
+    """
+    Start, resume, or dedup-skip a real NISAR GCOV granule download.
+
+    Returns immediately with the current status; the actual transfer runs in
+    a background thread from a bounded pool (controlled concurrency). Poll
+    GET /api/v2/download/status/{granule_id} for real, byte-accurate progress.
+    """
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+
+    try:
+        status = download_manager.start_download(
+            request.granule_id, request.download_url, request.expected_size_mb
+        )
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download start error: {str(e)}")
+
+
+@app.get("/api/v2/download/status/{granule_id}", tags=["Download v2"])
+async def get_granule_download_status(granule_id: str):
+    """Real download status for a granule, verified against actual bytes on disk."""
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+    return download_manager.get_status(granule_id)
+
+
+@app.get("/api/v2/cache", tags=["Download v2"])
+async def list_granule_cache():
+    """List all granules known to the local cache (complete, partial, or failed)."""
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+    return {"status": "success", "cache": download_manager.list_cache()}
 
 
 if __name__ == "__main__":

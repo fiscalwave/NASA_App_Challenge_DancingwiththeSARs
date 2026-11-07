@@ -4,6 +4,7 @@ __pycache__/
 .streamlit/secrets.toml
 data/scenes/*.h5
 data/scenes/*.hdf5
+backend/data/cache/
 
 # Environment files with secrets (never commit real credentials)
 .env
