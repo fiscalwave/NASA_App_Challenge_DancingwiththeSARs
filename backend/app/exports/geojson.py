@@ -59,7 +59,13 @@ class GeoJSONExporter:
             for geom, val in shapes(binary_mask, transform=transform):
                 if val > 0:
                     shape_geom = shape(geom)
-                    
+
+                    # Compute real area in m2 while still in the original
+                    # projected CRS (meters). Computing this AFTER
+                    # reprojecting to EPSG:4326 would silently give square
+                    # degrees instead of square meters.
+                    area_m2 = shape_geom.area if crs != "EPSG:4326" else None
+
                     # Reproject to EPSG:4326
                     if crs != "EPSG:4326":
                         from rasterio.warp import transform as rasterio_transform
@@ -72,6 +78,8 @@ class GeoJSONExporter:
                         ]
                         from shapely.geometry import Polygon
                         shape_geom = Polygon(transformed_coords)
+                    else:
+                        area_m2 = shape_geom.area
                     
                     # Simplify if requested
                     if simplify_tolerance > 0:
@@ -83,7 +91,7 @@ class GeoJSONExporter:
                         "geometry": mapping(shape_geom),
                         "properties": {
                             "class": "detected_feature",
-                            "area_m2": shape_geom.area,
+                            "area_m2": area_m2,
                         }
                     }
                     features.append(feature)

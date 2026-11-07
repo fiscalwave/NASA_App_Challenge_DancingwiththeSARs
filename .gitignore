@@ -5,6 +5,7 @@ __pycache__/
 data/scenes/*.h5
 data/scenes/*.hdf5
 backend/data/cache/
+backend/data/analysis_cache/
 
 # Environment files with secrets (never commit real credentials)
 .env

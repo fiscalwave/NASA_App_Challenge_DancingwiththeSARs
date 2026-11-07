@@ -13,6 +13,7 @@ from datetime import datetime
 import os
 import sys
 import hashlib
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 import asf_search
@@ -36,6 +37,23 @@ except ImportError as e:
     print(f"Warning: Could not import discovery/download pipeline: {e}")
     CMRAdapter = None
     DownloadManager = None
+
+# Import Phase 5 real GCOV processing pipeline (dormant app/ package: real
+# HDF5 reading, backscatter change detection, flood classification, and
+# GeoTIFF/GeoJSON export - additive, does not replace existing imagery/analyze)
+try:
+    from app.processing.gcov_reader import GCOVReader
+    from app.processing.change_detection import ChangeDetectionEngine
+    from app.exports.geotiff import GeoTIFFExporter
+    from app.exports.geojson import GeoJSONExporter
+    from app.ingestion.cmr_adapter import _parse_granule_id_fields
+    from app.utils.errors import ProcessingError, ValidationError, DataIngestionError
+except ImportError as e:
+    print(f"Warning: Could not import GCOV processing pipeline: {e}")
+    GCOVReader = None
+    ChangeDetectionEngine = None
+    GeoTIFFExporter = None
+    GeoJSONExporter = None
 
 
 # Load environment variables from .env (in backend directory)
@@ -108,6 +126,13 @@ print(f"  .env file found: {ENV_FILE_FOUND}")
 
 GCOV_CACHE_DIR = Path(__file__).parent / "data" / "cache"
 GCOV_SAMPLE_DIR = Path(__file__).parent.parent / "data" / "scenes"
+
+# ============================================================================
+# PHASE 5: REAL CHANGE-DETECTION ANALYSIS RESULTS CACHE (additive, /api/v2/*)
+# ============================================================================
+
+GCOV_ANALYSIS_CACHE_DIR = Path(__file__).parent / "data" / "analysis_cache"
+GCOV_ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 download_manager = None
 if DownloadManager is not None:
@@ -223,6 +248,20 @@ class DownloadStartRequest(BaseModel):
     granule_id: str
     download_url: str
     expected_size_mb: Optional[float] = None
+
+
+class AnalyzeRequest(BaseModel):
+    """Real before/after NISAR L2 GCOV change-detection request.
+
+    Both granules must already be fully downloaded (status "complete" via
+    /api/v2/download/status) - this endpoint reads real local HDF5 files,
+    it does not download anything itself."""
+    before_granule_id: str
+    after_granule_id: str
+    bounds: BoundsModel
+    polarization: str = "HHHH"
+    flood_change_threshold_db: float = -2.0
+    low_backscatter_threshold_db: float = -15.0
 
 
 # ============================================================================
@@ -803,6 +842,184 @@ async def list_granule_cache():
     if download_manager is None:
         raise HTTPException(status_code=503, detail="Download manager not available")
     return {"status": "success", "cache": download_manager.list_cache()}
+
+
+# ============================================================================
+# PHASE 5: REAL FLOOD/CHANGE DETECTION (real GCOV HDF5 processing, /api/v2/*)
+# ============================================================================
+
+def _resolve_granule_path(granule_id: str) -> Path:
+    """Resolve a granule_id to its local file path, requiring it to already be
+    fully downloaded (status == 'complete'). Never substitutes a different
+    file or mock data."""
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+    status = download_manager.get_status(granule_id)
+    if status.get("status") != "complete":
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Granule '{granule_id}' is not downloaded yet "
+                f"(status: {status.get('status', 'not_found')}). Use "
+                f"/api/v2/download/start first and poll /api/v2/download/status/{{granule_id}}."
+            ),
+        )
+    local_path = Path(status["local_path"])
+    if not local_path.exists():
+        raise HTTPException(status_code=404, detail=f"Cached file missing on disk for granule '{granule_id}'")
+    return local_path
+
+
+def _analysis_id_for(request: AnalyzeRequest) -> str:
+    seed = (
+        f"{request.before_granule_id}|{request.after_granule_id}|"
+        f"{request.bounds.west}|{request.bounds.south}|{request.bounds.east}|{request.bounds.north}|"
+        f"{request.polarization}|{request.flood_change_threshold_db}|{request.low_backscatter_threshold_db}"
+    )
+    return hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+
+@app.post("/api/v2/analyze", tags=["Analysis v2"])
+async def analyze_real_change(request: AnalyzeRequest):
+    """
+    Real NISAR L2 GCOV before/after change detection.
+
+    Reads actual HDF5 backscatter data for both granules (which must already
+    be downloaded locally via /api/v2/download), reprojects/aligns them,
+    computes the real backscatter difference (delta sigma0 = sigma0_post -
+    sigma0_pre), and classifies possible new inundation vs persistent
+    low-backscatter (existing water) using documented, configurable
+    thresholds. Results (GeoTIFFs + GeoJSON + stats) are cached on disk keyed
+    by a deterministic analysis_id, so an identical repeat request is not
+    reprocessed.
+
+    Never fabricates results - if either granule is not yet downloaded, or
+    the AOI does not overlap one of the files, a clear error is returned
+    instead of mock data. If the before/after granules have incompatible
+    acquisition geometry (different track/frame/pass-direction), the
+    response includes a geometry_warning rather than silently treating the
+    comparison as equally reliable.
+    """
+    if GCOVReader is None or ChangeDetectionEngine is None:
+        raise HTTPException(status_code=503, detail="GCOV processing pipeline not available")
+
+    analysis_id = _analysis_id_for(request)
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+
+    # Cache hit: identical request already processed - skip reprocessing
+    if summary_path.exists():
+        with open(summary_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        return cached
+
+    before_path = _resolve_granule_path(request.before_granule_id)
+    after_path = _resolve_granule_path(request.after_granule_id)
+
+    bounds_tuple = (request.bounds.west, request.bounds.south, request.bounds.east, request.bounds.north)
+
+    # Geometry compatibility check (does not block the analysis, but flags
+    # the limitation rather than silently comparing incompatible geometries)
+    before_fields = _parse_granule_id_fields(request.before_granule_id)
+    after_fields = _parse_granule_id_fields(request.after_granule_id)
+    geometry_compatible = (
+        before_fields.get("track") is not None
+        and before_fields["track"] == after_fields.get("track")
+        and before_fields["frame"] == after_fields.get("frame")
+        and before_fields["pass_direction"] == after_fields.get("pass_direction")
+    )
+
+    try:
+        before_data = GCOVReader.load_gcov_subset(before_path, request.polarization, bounds_tuple)
+        after_data = GCOVReader.load_gcov_subset(after_path, request.polarization, bounds_tuple)
+
+        change, aligned_before, aligned_after, pixel_area_km2 = ChangeDetectionEngine.align_and_compare(
+            before_data, after_data
+        )
+        possible_flood, persistent_water, classification_stats = (
+            ChangeDetectionEngine.create_flood_classification_masks(
+                aligned_before, aligned_after, change,
+                request.flood_change_threshold_db, request.low_backscatter_threshold_db, pixel_area_km2,
+            )
+        )
+        change_stats = ChangeDetectionEngine.calculate_change_statistics(change)
+
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+        layers = {
+            "before": aligned_before,
+            "after": aligned_after,
+            "change": change,
+            "possible_flood": possible_flood,
+            "persistent_water": persistent_water,
+        }
+        for name, arr in layers.items():
+            tif_bytes = GeoTIFFExporter.export_to_geotiff(arr, after_data["transform"], after_data["crs"])
+            (result_dir / f"{name}.tif").write_bytes(tif_bytes)
+
+        # Vectorize the classification masks to real GeoJSON polygons
+        for name in ("possible_flood", "persistent_water"):
+            geojson_str = GeoJSONExporter.raster_to_geojson(layers[name], after_data["transform"], after_data["crs"])
+            (result_dir / f"{name}.geojson").write_text(geojson_str)
+
+        summary = {
+            "status": "success",
+            "analysis_id": analysis_id,
+            "cached": False,
+            "before_granule_id": request.before_granule_id,
+            "after_granule_id": request.after_granule_id,
+            "polarization": request.polarization,
+            "bounds": list(bounds_tuple),
+            "crs": after_data["crs"],
+            "pixel_area_km2": pixel_area_km2,
+            "shape": list(change.shape),
+            "thresholds": {
+                "flood_change_db": request.flood_change_threshold_db,
+                "low_backscatter_db": request.low_backscatter_threshold_db,
+            },
+            "change_statistics": change_stats,
+            "classification_statistics": classification_stats,
+            "geometry_compatible": geometry_compatible,
+            "geometry_warning": None if geometry_compatible else (
+                "The before and after granules have different track, frame, or pass "
+                "direction. Backscatter differences may partly reflect different SAR "
+                "look geometry rather than real surface change. Treat results as lower confidence."
+            ),
+            "layers": {name: f"/api/v2/analyze/{analysis_id}/layer/{name}.tif" for name in layers},
+            "geojson": {
+                name: f"/api/v2/analyze/{analysis_id}/geojson/{name}.geojson"
+                for name in ("possible_flood", "persistent_water")
+            },
+        }
+
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+        return summary
+
+    except (ProcessingError, ValidationError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
+
+
+@app.get("/api/v2/analyze/{analysis_id}/layer/{layer_name}", tags=["Analysis v2"])
+async def get_analysis_layer(analysis_id: str, layer_name: str):
+    """Download a real GeoTIFF raster layer from a completed analysis."""
+    file_path = GCOV_ANALYSIS_CACHE_DIR / analysis_id / layer_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Layer not found")
+    return FileResponse(file_path, media_type="image/tiff")
+
+
+@app.get("/api/v2/analyze/{analysis_id}/geojson/{layer_name}", tags=["Analysis v2"])
+async def get_analysis_geojson(analysis_id: str, layer_name: str):
+    """Download a real vectorized GeoJSON layer from a completed analysis."""
+    file_path = GCOV_ANALYSIS_CACHE_DIR / analysis_id / layer_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Layer not found")
+    return FileResponse(file_path, media_type="application/geo+json")
 
 
 if __name__ == "__main__":
