@@ -1813,6 +1813,17 @@
             throw lastError;
         }
 
+        // queryOverpass() only throws after every configured mirror has
+        // already failed, so any error reaching the UI means OpenStreetMap's
+        // free public Overpass service is temporarily overloaded/unreachable -
+        // not a bug in this app. Show a clear, honest, human-readable message
+        // (with the real technical reason still visible for transparency and
+        // debugging) rather than a raw low-level error string.
+        function buildOverpassErrorMessage(layerType, error) {
+            const reason = error && error.message ? error.message : String(error);
+            return `Could not load the ${layerType} layer: OpenStreetMap's free public map-data service (Overpass API) is temporarily unavailable or overloaded right now. This is an external service issue, not a problem with this app - please try again in a few minutes.\n\n(Technical detail: ${reason})`;
+        }
+
         function clearInfrastructureLayers() {
             Object.keys(infrastructureLayerGroups).forEach(layerType => {
                 map.removeLayer(infrastructureLayerGroups[layerType]);
@@ -1959,7 +1970,7 @@
                 }
             } catch (error) {
                 console.error(`Error loading ${layerType} layer:`, error);
-                alert(`Could not load ${layerType} layer from OpenStreetMap: ${error.message}`);
+                alert(buildOverpassErrorMessage(layerType, error));
                 checkbox.checked = false;
             } finally {
                 checkbox.disabled = false;
