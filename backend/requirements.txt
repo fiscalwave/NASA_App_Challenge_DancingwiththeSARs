@@ -4,7 +4,7 @@ uvicorn==0.32.1
 pydantic==2.10.4
 
 # Data Discovery & Download
-asf-search==8.0.0
+asf-search==14.1.0
 requests==2.32.3
 
 # Imagery Processing
