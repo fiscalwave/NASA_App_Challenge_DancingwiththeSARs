@@ -500,6 +500,41 @@ async def health_check():
     }
 
 
+@app.get("/api/v2/diagnostics/earthdata-auth", tags=["System"])
+async def diagnose_earthdata_auth():
+    """
+    Safely verify whether this deployment's NASA Earthdata credentials
+    (ASF_USERNAME/ASF_PASSWORD) are configured and actually authenticate -
+    without ever exposing the username or password value itself. Useful for
+    diagnosing 'works locally but fails on Render' credential issues, since
+    the env vars are deliberately not stored in git (render.yaml sync: false)
+    and must be set manually per-deployment.
+    """
+    configured = bool(ASF_USERNAME) and bool(ASF_PASSWORD)
+    result = {
+        "credentials_configured": configured,
+        "username_length": len(ASF_USERNAME) if ASF_USERNAME else 0,
+        "password_length": len(ASF_PASSWORD) if ASF_PASSWORD else 0,
+        "username_has_whitespace": (ASF_USERNAME != ASF_USERNAME.strip()) if ASF_USERNAME else None,
+        "password_has_whitespace": (ASF_PASSWORD != ASF_PASSWORD.strip()) if ASF_PASSWORD else None,
+    }
+
+    if not configured:
+        result["auth_check"] = "not_attempted"
+        result["detail"] = "ASF_USERNAME and/or ASF_PASSWORD are empty in this deployment's environment."
+        return result
+
+    try:
+        session = asf_search.ASFSession()
+        session.auth_with_creds(ASF_USERNAME, ASF_PASSWORD)
+        result["auth_check"] = "success"
+    except Exception as e:
+        result["auth_check"] = "failed"
+        result["error"] = str(e)
+
+    return result
+
+
 @app.post("/api/search", response_model=SearchResponse, tags=["Discovery"])
 async def search_scenes(request: SearchRequest) -> SearchResponse:
     """
