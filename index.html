@@ -1479,6 +1479,42 @@
             }
         }
 
+        // Start a long-running real backend job (change detection, or
+        // OpenStreetMap infrastructure impact) and poll its status until
+        // done, instead of waiting on one single blocking HTTP request.
+        // This exists because Render's reverse proxy kills requests that
+        // run too long - real processing minutes/~90s-long Overpass queries
+        // would otherwise hang or fail with a bare, unhelpful 500 error.
+        // The backend returns {"status": "processing", "status_url": ...}
+        // immediately; this polls that status_url every 2s until it returns
+        // the final result (or throws via an HTTP error).
+        async function startAndPollJob(startFetchPromise, label, generation) {
+            const startResp = await startFetchPromise;
+            let data = await startResp.json();
+            if (!startResp.ok) {
+                throw new Error(data.detail || `${label} failed to start`);
+            }
+            if (data.status !== 'processing') {
+                return data; // immediate cache hit - already fully complete
+            }
+            const statusUrl = data.status_url;
+            let elapsedSeconds = 0;
+            while (true) {
+                if (generation !== searchGeneration) return null; // superseded
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                elapsedSeconds += 2;
+                showGlobalStatus(`${label}... (${elapsedSeconds}s elapsed)`);
+                const statusResp = await fetch(statusUrl);
+                const statusData = await statusResp.json();
+                if (!statusResp.ok) {
+                    throw new Error(statusData.detail || `${label} failed`);
+                }
+                if (statusData.status !== 'processing') {
+                    return statusData;
+                }
+            }
+        }
+
         async function runRealAnalysisWorkflow(bounds, startDate, endDate, generation) {
             showGlobalStatus('Searching NASA CMR for real NISAR L2 GCOV acquisitions...');
 
@@ -1527,27 +1563,30 @@
             if (generation !== searchGeneration) return;
 
             showGlobalStatus('Running real NISAR backscatter change detection...');
-            const analyzeResp = await fetch('/api/v2/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    before_granule_id: pair.before,
-                    after_granule_id: pair.after,
-                    polarization: 'HHHH',
-                    bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north }
-                })
-            });
-            const summary = await analyzeResp.json();
-            if (!analyzeResp.ok) {
-                throw new Error(summary.detail || 'Real change-detection analysis failed');
-            }
-            if (generation !== searchGeneration) return;
+            const summary = await startAndPollJob(
+                fetch('/api/v2/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        before_granule_id: pair.before,
+                        after_granule_id: pair.after,
+                        polarization: 'HHHH',
+                        bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north }
+                    })
+                }),
+                'Running real NISAR backscatter change detection',
+                generation
+            );
+            if (generation !== searchGeneration || !summary) return;
 
             showGlobalStatus('Computing real infrastructure impact from OpenStreetMap (this can take up to ~90 seconds)...');
             let impact = null;
             try {
-                const impactResp = await fetch(`/api/v2/analyze/${summary.analysis_id}/impact`, { method: 'POST' });
-                impact = await impactResp.json();
+                impact = await startAndPollJob(
+                    fetch(`/api/v2/analyze/${summary.analysis_id}/impact`, { method: 'POST' }),
+                    'Computing real infrastructure impact from OpenStreetMap',
+                    generation
+                );
             } catch (impactError) {
                 console.warn('Infrastructure impact unavailable:', impactError);
             }

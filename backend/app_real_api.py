@@ -166,6 +166,27 @@ GCOV_SAMPLE_DIR = Path(__file__).parent.parent / "data" / "scenes"
 GCOV_ANALYSIS_CACHE_DIR = Path(__file__).parent / "data" / "analysis_cache"
 GCOV_ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ============================================================================
+# PHASE 7c: BACKGROUND JOB INFRASTRUCTURE FOR LONG-RUNNING REAL PROCESSING
+# ============================================================================
+# Render's own documented best practice (and ours, learned the hard way) is
+# that a web request handler must return quickly: Render's reverse proxy
+# enforces a request timeout, so a single synchronous HTTP call blocked on
+# real multi-minute processing (GCOV change detection, or ~90s of live
+# Overpass queries) gets killed mid-flight, surfacing as a bare "Internal
+# Server Error" with no JSON body (a proxy-level timeout, not our own
+# exception handling) - or, from the browser, as the request simply hanging
+# forever. /api/v2/analyze and its /impact endpoint are therefore "thin
+# handlers": they kick off the real work in a background thread and return
+# immediately with a status the client polls, instead of blocking.
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+_background_executor = ThreadPoolExecutor(max_workers=2)
+_job_lock = threading.Lock()
+_analysis_jobs: Dict[str, Dict[str, Any]] = {}  # analysis_id -> {"status": "processing"|"failed", "error": str}
+_impact_jobs: Dict[str, Dict[str, Any]] = {}    # analysis_id -> {"status": "processing"|"failed", "error": str}
+
 download_manager = None
 if DownloadManager is not None:
     download_manager = DownloadManager(
@@ -552,6 +573,51 @@ async def diagnose_earthdata_auth():
     return result
 
 
+@app.get("/api/v2/diagnostics/granule-info/{granule_id}", tags=["System"])
+async def diagnose_granule_info(granule_id: str):
+    """
+    Safely inspect a downloaded real GCOV HDF5 file's structure (frequency
+    groups, available polarization datasets, projection, coordinate array
+    sizes/ranges) without running the full analysis pipeline. Used to
+    diagnose real-world failures (e.g. an unhandled crash during analysis)
+    by confirming what the file actually contains, rather than guessing.
+    """
+    try:
+        file_path = _resolve_granule_path(granule_id)
+    except HTTPException as e:
+        return {"status": "error", "detail": e.detail}
+
+    if GCOVReader is None:
+        raise HTTPException(status_code=503, detail="GCOV processing pipeline not available")
+
+    import h5py
+    try:
+        with h5py.File(file_path, "r") as f:
+            freq_group = GCOVReader.find_frequency_group(f)
+            pol_datasets = [
+                k for k in freq_group.keys()
+                if k in GCOVReader.SUPPORTED_POLARIZATIONS
+            ]
+            x_coords = freq_group["xCoordinates"][:]
+            y_coords = freq_group["yCoordinates"][:]
+            projection = GCOVReader._scalar(freq_group["projection"][()])
+            return {
+                "status": "success",
+                "granule_id": granule_id,
+                "file_size_bytes": file_path.stat().st_size,
+                "frequency_group_path": freq_group.name,
+                "available_polarizations": pol_datasets,
+                "all_keys_in_group": list(freq_group.keys()),
+                "projection_epsg": int(projection),
+                "x_coord_count": int(x_coords.size),
+                "y_coord_count": int(y_coords.size),
+                "x_range": [float(x_coords.min()), float(x_coords.max())],
+                "y_range": [float(y_coords.min()), float(y_coords.max())],
+            }
+    except Exception as e:
+        return {"status": "error", "detail": f"{type(e).__name__}: {e}"}
+
+
 @app.get("/api/v2/diagnostics/external-cache", tags=["System"])
 async def diagnose_external_cache():
     """
@@ -743,69 +809,30 @@ def _analysis_id_for(request: AnalyzeRequest) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
-@app.post("/api/v2/analyze", tags=["Analysis v2"])
-async def analyze_real_change(request: AnalyzeRequest):
+def _run_real_analysis(analysis_id: str, request: "AnalyzeRequest", result_dir: Path, summary_path: Path) -> None:
     """
-    Real NISAR L2 GCOV before/after change detection.
-
-    Reads actual HDF5 backscatter data for both granules (which must already
-    be downloaded locally via /api/v2/download), reprojects/aligns them,
-    computes the real backscatter difference (delta sigma0 = sigma0_post -
-    sigma0_pre), and classifies possible new inundation vs persistent
-    low-backscatter (existing water) using documented, configurable
-    thresholds. Results (GeoTIFFs + GeoJSON + stats) are cached on disk keyed
-    by a deterministic analysis_id, so an identical repeat request is not
-    reprocessed.
-
-    Never fabricates results - if either granule is not yet downloaded, or
-    the AOI does not overlap one of the files, a clear error is returned
-    instead of mock data. If the before/after granules have incompatible
-    acquisition geometry (different track/frame/pass-direction), the
-    response includes a geometry_warning rather than silently treating the
-    comparison as equally reliable.
+    The actual real GCOV processing work (runs in a background thread - see
+    PHASE 7c above). Writes summary.json (and layer/geojson files) on success,
+    or records a failure in _analysis_jobs on error. Never raises back to the
+    caller since nothing is awaiting this directly.
     """
-    if GCOVReader is None or ChangeDetectionEngine is None:
-        raise HTTPException(status_code=503, detail="GCOV processing pipeline not available")
-
-    analysis_id = _analysis_id_for(request)
-    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
-    summary_path = result_dir / "summary.json"
-
-    # Cache hit: identical request already processed - skip reprocessing
-    if summary_path.exists():
-        with open(summary_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        return cached
-
-    # Cache hit (external): local disk was wiped (e.g. a Render free-tier
-    # restart) but this exact real result was already computed once and
-    # persisted to the free external cache - restore it instead of
-    # re-downloading the multi-GB granule and re-running the full pipeline.
-    if download_analysis_result and download_analysis_result(analysis_id, result_dir):
-        with open(summary_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        cached["cache_source"] = "external"
-        return cached
-
-    before_path = _resolve_granule_path(request.before_granule_id)
-    after_path = _resolve_granule_path(request.after_granule_id)
-
-    bounds_tuple = (request.bounds.west, request.bounds.south, request.bounds.east, request.bounds.north)
-
-    # Geometry compatibility check (does not block the analysis, but flags
-    # the limitation rather than silently comparing incompatible geometries)
-    before_fields = _parse_granule_id_fields(request.before_granule_id)
-    after_fields = _parse_granule_id_fields(request.after_granule_id)
-    geometry_compatible = (
-        before_fields.get("track") is not None
-        and before_fields["track"] == after_fields.get("track")
-        and before_fields["frame"] == after_fields.get("frame")
-        and before_fields["pass_direction"] == after_fields.get("pass_direction")
-    )
-
     try:
+        before_path = _resolve_granule_path(request.before_granule_id)
+        after_path = _resolve_granule_path(request.after_granule_id)
+
+        bounds_tuple = (request.bounds.west, request.bounds.south, request.bounds.east, request.bounds.north)
+
+        # Geometry compatibility check (does not block the analysis, but flags
+        # the limitation rather than silently comparing incompatible geometries)
+        before_fields = _parse_granule_id_fields(request.before_granule_id)
+        after_fields = _parse_granule_id_fields(request.after_granule_id)
+        geometry_compatible = (
+            before_fields.get("track") is not None
+            and before_fields["track"] == after_fields.get("track")
+            and before_fields["frame"] == after_fields.get("frame")
+            and before_fields["pass_direction"] == after_fields.get("pass_direction")
+        )
+
         before_data = GCOVReader.load_gcov_subset(before_path, request.polarization, bounds_tuple)
         after_data = GCOVReader.load_gcov_subset(after_path, request.polarization, bounds_tuple)
 
@@ -899,12 +926,119 @@ async def analyze_real_change(request: AnalyzeRequest):
         if upload_analysis_result:
             upload_analysis_result(analysis_id, result_dir)
 
-        return summary
+        with _job_lock:
+            _analysis_jobs[analysis_id] = {"status": "success"}
 
     except (ProcessingError, ValidationError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        with _job_lock:
+            _analysis_jobs[analysis_id] = {"status": "failed", "error": str(e)}
+    except HTTPException as e:
+        with _job_lock:
+            _analysis_jobs[analysis_id] = {"status": "failed", "error": str(e.detail)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
+        with _job_lock:
+            _analysis_jobs[analysis_id] = {"status": "failed", "error": f"Analysis error: {e}"}
+
+
+@app.post("/api/v2/analyze", tags=["Analysis v2"])
+async def analyze_real_change(request: AnalyzeRequest):
+    """
+    Real NISAR L2 GCOV before/after change detection.
+
+    Reads actual HDF5 backscatter data for both granules (which must already
+    be downloaded locally via /api/v2/download), reprojects/aligns them,
+    computes the real backscatter difference (delta sigma0 = sigma0_post -
+    sigma0_pre), and classifies possible new inundation vs persistent
+    low-backscatter (existing water) using documented, configurable
+    thresholds.
+
+    This is a THIN HANDLER: real processing can take minutes for a large
+    AOI, which exceeds Render's reverse-proxy request timeout if done
+    synchronously. The actual work runs in a background thread; this
+    endpoint returns immediately with {"status": "processing", ...} (or the
+    full cached result if already computed). Poll
+    GET /api/v2/analyze/status/{analysis_id} for completion.
+
+    Never fabricates results - if either granule is not yet downloaded, or
+    the AOI does not overlap one of the files, a clear error is returned
+    (via the status endpoint) instead of mock data.
+    """
+    if GCOVReader is None or ChangeDetectionEngine is None:
+        raise HTTPException(status_code=503, detail="GCOV processing pipeline not available")
+
+    analysis_id = _analysis_id_for(request)
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+
+    # Cache hit: identical request already processed - skip reprocessing
+    if summary_path.exists():
+        with open(summary_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        return cached
+
+    # Cache hit (external): local disk was wiped (e.g. a Render free-tier
+    # restart) but this exact real result was already computed once and
+    # persisted to the free external cache - restore it instead of
+    # re-downloading the multi-GB granule and re-running the full pipeline.
+    if download_analysis_result and download_analysis_result(analysis_id, result_dir):
+        with open(summary_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        cached["cache_source"] = "external"
+        return cached
+
+    # Fail fast (synchronously) if the granules aren't downloaded yet - this
+    # is a fast local check, not real processing, so it's fine in the thin handler.
+    _resolve_granule_path(request.before_granule_id)
+    _resolve_granule_path(request.after_granule_id)
+
+    with _job_lock:
+        existing = _analysis_jobs.get(analysis_id)
+        if existing and existing.get("status") == "processing":
+            return {"status": "processing", "analysis_id": analysis_id,
+                    "message": "Real analysis already in progress for this request."}
+        _analysis_jobs[analysis_id] = {"status": "processing"}
+
+    _background_executor.submit(_run_real_analysis, analysis_id, request, result_dir, summary_path)
+
+    return {
+        "status": "processing",
+        "analysis_id": analysis_id,
+        "message": "Real NISAR change-detection analysis started in the background.",
+        "status_url": f"/api/v2/analyze/status/{analysis_id}",
+    }
+
+
+@app.get("/api/v2/analyze/status/{analysis_id}", tags=["Analysis v2"])
+async def get_analyze_status(analysis_id: str):
+    """Poll the status of a real analysis started via POST /api/v2/analyze."""
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+
+    if summary_path.exists():
+        with open(summary_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        return cached
+
+    with _job_lock:
+        job = _analysis_jobs.get(analysis_id)
+
+    if job is None:
+        if download_analysis_result and download_analysis_result(analysis_id, result_dir):
+            with open(summary_path) as f:
+                cached = json.load(f)
+            cached["cached"] = True
+            cached["cache_source"] = "external"
+            return cached
+        raise HTTPException(status_code=404, detail="No analysis found or in progress for this analysis_id")
+
+    if job.get("status") == "failed":
+        raise HTTPException(status_code=500, detail=job.get("error", "Analysis failed"))
+
+    return {"status": "processing", "analysis_id": analysis_id}
+
 
 
 @app.get("/api/v2/analyze/{analysis_id}/layer/{layer_name}", tags=["Analysis v2"])
@@ -974,6 +1108,67 @@ async def get_analysis_visual(analysis_id: str, layer: str):
 # explainable priority scoring, built on real Phase 5 output, /api/v2/*)
 # ============================================================================
 
+def _run_real_impact(analysis_id: str, result_dir: Path, summary_path: Path, flood_geojson_path: Path, impact_path: Path) -> None:
+    """The actual real infrastructure-impact work (runs in a background
+    thread - Overpass queries can take up to ~90s, which exceeds Render's
+    reverse-proxy request timeout if done synchronously)."""
+    try:
+        with open(summary_path) as f:
+            summary = json.load(f)
+
+        with open(flood_geojson_path) as f:
+            flood_geojson = json.load(f)
+
+        bbox = tuple(summary["bounds"])
+        crs = summary["crs"]
+
+        impact = compute_infrastructure_impact(flood_geojson, bbox, crs)
+
+        acquisition_time = _parse_granule_acquisition_time(summary["after_granule_id"]) if _parse_granule_acquisition_time else None
+        observation_age_days = compute_observation_age_days(acquisition_time) if compute_observation_age_days else None
+
+        priority = compute_priority(
+            inundation_area_km2=summary["classification_statistics"]["possible_flood_area_km2"],
+            infrastructure_categories=impact.get("categories", {}),
+            geometry_compatible=summary.get("geometry_compatible", True),
+            observation_age_days=observation_age_days,
+        )
+
+        result = {
+            "status": "success",
+            "cached": False,
+            "analysis_id": analysis_id,
+            "after_granule_acquisition_time": acquisition_time,
+            "infrastructure_impact": impact,
+            "priority": priority,
+        }
+
+        # Only persist to disk if OpenStreetMap actually returned usable data
+        # for at least one category (or the flood polygon was genuinely
+        # empty). If every category failed - e.g. all 3 Overpass mirrors were
+        # rate-limited - that is a transient network condition, not a real
+        # analysis result, so we deliberately do not cache it and allow the
+        # next call to retry.
+        categories = impact.get("categories", {})
+        has_real_data = impact.get("status") == "no_flood_detected" or any(
+            cat.get("status") in ("ok", "no_features_found") for cat in categories.values()
+        )
+        if has_real_data:
+            with open(impact_path, "w") as f:
+                json.dump(result, f, indent=2)
+            if upload_analysis_result:
+                upload_analysis_result(analysis_id, result_dir)
+        else:
+            result["note"] = "Not cached: all OpenStreetMap categories were unavailable (transient network failure). Retry the request."
+
+        with _job_lock:
+            _impact_jobs[analysis_id] = {"status": "success", "result": result}
+
+    except Exception as e:
+        with _job_lock:
+            _impact_jobs[analysis_id] = {"status": "failed", "error": f"Impact analysis error: {e}"}
+
+
 @app.post("/api/v2/analyze/{analysis_id}/impact", tags=["Impact v6"])
 async def analyze_infrastructure_impact(analysis_id: str):
     """
@@ -984,6 +1179,13 @@ async def analyze_infrastructure_impact(analysis_id: str):
     (roads, hospitals, schools, settlements, power plants), then produces an
     explainable, rule-based priority classification (Critical/High/Moderate/
     Low) with the full list of real factors that produced it.
+
+    This is a THIN HANDLER: Overpass queries can take up to ~90s, which
+    exceeds Render's reverse-proxy request timeout if done synchronously.
+    The actual work runs in a background thread; this endpoint returns
+    immediately with {"status": "processing", ...} (or the full cached
+    result if already computed). Poll
+    GET /api/v2/analyze/{analysis_id}/impact/status for completion.
 
     Population exposure is intentionally reported as unavailable rather than
     estimated, since no gridded population dataset is currently integrated.
@@ -1020,54 +1222,50 @@ async def analyze_infrastructure_impact(analysis_id: str):
         cached["cached"] = True
         return cached
 
-    with open(summary_path) as f:
-        summary = json.load(f)
+    with _job_lock:
+        existing = _impact_jobs.get(analysis_id)
+        if existing and existing.get("status") == "processing":
+            return {"status": "processing", "analysis_id": analysis_id,
+                    "message": "Real infrastructure-impact analysis already in progress."}
+        _impact_jobs[analysis_id] = {"status": "processing"}
 
-    with open(flood_geojson_path) as f:
-        flood_geojson = json.load(f)
+    _background_executor.submit(_run_real_impact, analysis_id, result_dir, summary_path, flood_geojson_path, impact_path)
 
-    bbox = tuple(summary["bounds"])
-    crs = summary["crs"]
-
-    impact = compute_infrastructure_impact(flood_geojson, bbox, crs)
-
-    acquisition_time = _parse_granule_acquisition_time(summary["after_granule_id"]) if _parse_granule_acquisition_time else None
-    observation_age_days = compute_observation_age_days(acquisition_time) if compute_observation_age_days else None
-
-    priority = compute_priority(
-        inundation_area_km2=summary["classification_statistics"]["possible_flood_area_km2"],
-        infrastructure_categories=impact.get("categories", {}),
-        geometry_compatible=summary.get("geometry_compatible", True),
-        observation_age_days=observation_age_days,
-    )
-
-    result = {
-        "status": "success",
-        "cached": False,
+    return {
+        "status": "processing",
         "analysis_id": analysis_id,
-        "after_granule_acquisition_time": acquisition_time,
-        "infrastructure_impact": impact,
-        "priority": priority,
+        "message": "Real infrastructure-impact analysis started in the background (OpenStreetMap queries can take up to ~90 seconds).",
+        "status_url": f"/api/v2/analyze/{analysis_id}/impact/status",
     }
 
-    # Only persist to disk if OpenStreetMap actually returned usable data for
-    # at least one category (or the flood polygon was genuinely empty). If
-    # every category failed - e.g. all 3 Overpass mirrors were rate-limited -
-    # that is a transient network condition, not a real analysis result, so
-    # we deliberately do not cache it and allow the next call to retry.
-    categories = impact.get("categories", {})
-    has_real_data = impact.get("status") == "no_flood_detected" or any(
-        cat.get("status") in ("ok", "no_features_found") for cat in categories.values()
-    )
-    if has_real_data:
-        with open(impact_path, "w") as f:
-            json.dump(result, f, indent=2)
-        if upload_analysis_result:
-            upload_analysis_result(analysis_id, result_dir)
-    else:
-        result["note"] = "Not cached: all OpenStreetMap categories were unavailable (transient network failure). Retry the request."
 
-    return result
+@app.get("/api/v2/analyze/{analysis_id}/impact/status", tags=["Impact v6"])
+async def get_impact_status(analysis_id: str):
+    """Poll the status of a real impact analysis started via POST /api/v2/analyze/{analysis_id}/impact."""
+    result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
+    impact_path = result_dir / "impact.json"
+
+    if impact_path.exists():
+        with open(impact_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        return cached
+
+    with _job_lock:
+        job = _impact_jobs.get(analysis_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="No impact analysis found or in progress for this analysis_id")
+
+    if job.get("status") == "failed":
+        raise HTTPException(status_code=500, detail=job.get("error", "Impact analysis failed"))
+
+    if job.get("status") == "success":
+        result = job["result"]
+        result["cached"] = False
+        return result
+
+    return {"status": "processing", "analysis_id": analysis_id}
 
 
 if __name__ == "__main__":
