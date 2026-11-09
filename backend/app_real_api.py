@@ -70,6 +70,23 @@ except ImportError as e:
     compute_observation_age_days = None
     compute_detection_confidence = None
 
+# Import Phase 7b optional free external result cache (Cloudflare R2 / any
+# S3-compatible store). Gracefully no-ops if R2_* env vars are not set, so
+# this is purely additive - never required for real analysis to function.
+try:
+    from app.storage.r2_cache import (
+        upload_analysis_result,
+        download_analysis_result,
+        download_single_file,
+        ENABLED as R2_CACHE_ENABLED,
+    )
+except ImportError as e:
+    print(f"Warning: Could not import external result cache: {e}")
+    upload_analysis_result = None
+    download_analysis_result = None
+    download_single_file = None
+    R2_CACHE_ENABLED = False
+
 
 # Load environment variables from .env (in backend directory)
 env_path = Path(__file__).parent / ".env"
@@ -535,6 +552,44 @@ async def diagnose_earthdata_auth():
     return result
 
 
+@app.get("/api/v2/diagnostics/external-cache", tags=["System"])
+async def diagnose_external_cache():
+    """
+    Safely verify whether the optional free external result cache
+    (Cloudflare R2 / any S3-compatible store) is configured and reachable -
+    without exposing the access key or secret key values. This cache is
+    purely a performance optimization (see app/storage/r2_cache.py) so the
+    app works correctly even if this reports disabled/unreachable.
+    """
+    from app.storage.r2_cache import R2_ACCOUNT_ID, R2_BUCKET_NAME
+
+    result = {
+        "enabled": R2_CACHE_ENABLED,
+        "bucket_name": R2_BUCKET_NAME or None,
+        "account_id_configured": bool(R2_ACCOUNT_ID),
+    }
+
+    if not R2_CACHE_ENABLED:
+        result["detail"] = (
+            "External cache is disabled: set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
+            "R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME to enable it. The app "
+            "works correctly without it; real analysis results just won't "
+            "survive a Render restart/redeploy."
+        )
+        return result
+
+    try:
+        import app.storage.r2_cache as r2
+        client = r2._get_client()
+        client.head_bucket(Bucket=R2_BUCKET_NAME)
+        result["connection_check"] = "success"
+    except Exception as e:
+        result["connection_check"] = "failed"
+        result["error"] = str(e)
+
+    return result
+
+
 @app.post("/api/search", response_model=SearchResponse, tags=["Discovery"])
 async def search_scenes(request: SearchRequest) -> SearchResponse:
     """
@@ -723,6 +778,17 @@ async def analyze_real_change(request: AnalyzeRequest):
         cached["cached"] = True
         return cached
 
+    # Cache hit (external): local disk was wiped (e.g. a Render free-tier
+    # restart) but this exact real result was already computed once and
+    # persisted to the free external cache - restore it instead of
+    # re-downloading the multi-GB granule and re-running the full pipeline.
+    if download_analysis_result and download_analysis_result(analysis_id, result_dir):
+        with open(summary_path) as f:
+            cached = json.load(f)
+        cached["cached"] = True
+        cached["cache_source"] = "external"
+        return cached
+
     before_path = _resolve_granule_path(request.before_granule_id)
     after_path = _resolve_granule_path(request.after_granule_id)
 
@@ -826,6 +892,13 @@ async def analyze_real_change(request: AnalyzeRequest):
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
 
+        # Best-effort: persist this real result to the free external cache
+        # so a future Render restart (which wipes local disk) can restore it
+        # instantly instead of re-downloading/re-processing. Never blocks or
+        # fails the response if the external cache is unavailable/unconfigured.
+        if upload_analysis_result:
+            upload_analysis_result(analysis_id, result_dir)
+
         return summary
 
     except (ProcessingError, ValidationError) as e:
@@ -838,6 +911,8 @@ async def analyze_real_change(request: AnalyzeRequest):
 async def get_analysis_layer(analysis_id: str, layer_name: str):
     """Download a real GeoTIFF raster layer from a completed analysis."""
     file_path = GCOV_ANALYSIS_CACHE_DIR / analysis_id / layer_name
+    if not file_path.exists() and download_single_file:
+        download_single_file(analysis_id, layer_name, file_path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Layer not found")
     return FileResponse(file_path, media_type="image/tiff")
@@ -847,6 +922,8 @@ async def get_analysis_layer(analysis_id: str, layer_name: str):
 async def get_analysis_geojson(analysis_id: str, layer_name: str):
     """Download a real vectorized GeoJSON layer from a completed analysis."""
     file_path = GCOV_ANALYSIS_CACHE_DIR / analysis_id / layer_name
+    if not file_path.exists() and download_single_file:
+        download_single_file(analysis_id, layer_name, file_path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Layer not found")
     return FileResponse(file_path, media_type="application/geo+json")
@@ -872,10 +949,14 @@ async def get_analysis_visual(analysis_id: str, layer: str):
 
     result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
     tif_path = result_dir / f"{layer}.tif"
+    if not tif_path.exists() and download_single_file:
+        download_single_file(analysis_id, f"{layer}.tif", tif_path)
     if not tif_path.exists():
         raise HTTPException(status_code=404, detail=f"Analysis '{analysis_id}' or layer '{layer}' not found")
 
     flood_mask_path = result_dir / "possible_flood.tif"
+    if layer == "after" and not flood_mask_path.exists() and download_single_file:
+        download_single_file(analysis_id, "possible_flood.tif", flood_mask_path)
     try:
         image_data_url = render_real_sar_layer(
             str(tif_path),
@@ -919,11 +1000,19 @@ async def analyze_infrastructure_impact(analysis_id: str):
     flood_geojson_path = result_dir / "possible_flood.geojson"
     impact_path = result_dir / "impact.json"
 
+    # Restore from the external cache if a Render restart wiped local disk
+    # but this exact analysis_id was already fully computed once before.
+    if not summary_path.exists() and download_analysis_result:
+        download_analysis_result(analysis_id, result_dir)
+
     if not summary_path.exists():
         raise HTTPException(
             status_code=404,
             detail=f"Analysis '{analysis_id}' not found. Run /api/v2/analyze first.",
         )
+
+    if not flood_geojson_path.exists() and download_single_file:
+        download_single_file(analysis_id, "possible_flood.geojson", flood_geojson_path)
 
     if impact_path.exists():
         with open(impact_path) as f:
@@ -973,6 +1062,8 @@ async def analyze_infrastructure_impact(analysis_id: str):
     if has_real_data:
         with open(impact_path, "w") as f:
             json.dump(result, f, indent=2)
+        if upload_analysis_result:
+            upload_analysis_result(analysis_id, result_dir)
     else:
         result["note"] = "Not cached: all OpenStreetMap categories were unavailable (transient network failure). Retry the request."
 

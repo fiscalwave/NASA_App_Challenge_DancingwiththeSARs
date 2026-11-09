@@ -19,3 +19,8 @@ shapely==2.0.6
 
 # Utilities
 python-dotenv==1.0.1
+
+# Phase 7b: optional free external result cache (Cloudflare R2 / any
+# S3-compatible store) so small real analysis outputs survive Render free
+# tier's ephemeral-disk restarts/redeploys - see app/storage/r2_cache.py
+boto3==1.43.126
