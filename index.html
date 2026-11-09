@@ -908,6 +908,9 @@
                     <div class="form-input">
                         <input type="number" id="radiusInput" value="10" min="5" max="100" />
                     </div>
+                    <small style="color: #94a3b8; font-size: 0.78rem; display: block; margin-top: 0.3rem;">
+                        Keep under ~38 km: larger areas exceed the real-data processing memory limit on this deployment.
+                    </small>
                 </div>
 
                 <div class="form-group">
@@ -1393,6 +1396,29 @@
             const lon = locationCircle._latlng.lng;
             const radius = parseInt(document.getElementById('radiusInput').value) || 10;
             const locationText = location;
+
+            // Pre-flight check: GCOVReader enforces a hard real-data processing
+            // limit (MAX_SUBSET_PIXELS = 15,000,000, backend/app/processing/
+            // gcov_reader.py) to avoid out-of-memory failures on constrained
+            // hosts (Render's free tier has ~512MB RAM). Checking this BEFORE
+            // starting a real multi-GB download avoids wasting bandwidth/time
+            // on a search that would fail only after the download completes.
+            const PIXEL_SPACING_M = 20; // real NISAR GCOV pixel spacing
+            const MAX_SUBSET_PIXELS = 15000000;
+            const latRad = (bounds.north + bounds.south) / 2 * Math.PI / 180;
+            const widthM = (bounds.east - bounds.west) * 111320 * Math.cos(latRad);
+            const heightM = (bounds.north - bounds.south) * 111320;
+            const estimatedPixels = Math.round((widthM / PIXEL_SPACING_M) * (heightM / PIXEL_SPACING_M));
+            if (estimatedPixels > MAX_SUBSET_PIXELS) {
+                const maxRadiusKm = Math.floor(Math.sqrt(MAX_SUBSET_PIXELS) * PIXEL_SPACING_M / 2 / 1000);
+                alert(
+                    `Selected area is too large for real processing: an estimated ${estimatedPixels.toLocaleString()} ` +
+                    `pixels would need to be analyzed, exceeding the system's safe limit of ${MAX_SUBSET_PIXELS.toLocaleString()} ` +
+                    `(this limit exists to avoid out-of-memory failures on the hosting environment). ` +
+                    `Please reduce the search radius to roughly ${maxRadiusKm} km or less and try again.`
+                );
+                return;
+            }
 
             currentSearchContext = { lat, lon, radiusKm: radius, locationText, startDate, endDate, bounds };
             const myGeneration = ++searchGeneration;

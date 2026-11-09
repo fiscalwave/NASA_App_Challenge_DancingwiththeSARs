@@ -185,9 +185,15 @@ class GCOVReader:
                 
                 # Validate subset size
                 if subset_shape[0] * subset_shape[1] > cls.MAX_SUBSET_PIXELS:
+                    pixel_spacing_m = abs(float(x_coordinates[1] - x_coordinates[0])) if x_coordinates.size > 1 else 20.0
+                    max_side_m = (cls.MAX_SUBSET_PIXELS ** 0.5) * pixel_spacing_m
+                    max_radius_km = round(max_side_m / 2 / 1000, 1)
                     raise ValidationError(
                         f"Selected area is too large: {subset_shape[0] * subset_shape[1]} pixels "
-                        f"exceeds maximum of {cls.MAX_SUBSET_PIXELS}"
+                        f"exceeds the safe processing maximum of {cls.MAX_SUBSET_PIXELS} "
+                        f"(this limit avoids out-of-memory failures on constrained hosting). "
+                        f"Try a search radius of roughly {max_radius_km} km or less, based on this "
+                        f"file's real {pixel_spacing_m:.1f}m pixel spacing."
                     )
 
                 # Extract raw values
