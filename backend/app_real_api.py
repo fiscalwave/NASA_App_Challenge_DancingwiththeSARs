@@ -970,28 +970,36 @@ async def analyze_real_change(request: AnalyzeRequest):
     result_dir = GCOV_ANALYSIS_CACHE_DIR / analysis_id
     summary_path = result_dir / "summary.json"
 
-    # Cache hit: identical request already processed - skip reprocessing
-    if summary_path.exists():
-        with open(summary_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        return cached
+    try:
+        # Cache hit: identical request already processed - skip reprocessing
+        if summary_path.exists():
+            with open(summary_path) as f:
+                cached = json.load(f)
+            cached["cached"] = True
+            return cached
 
-    # Cache hit (external): local disk was wiped (e.g. a Render free-tier
-    # restart) but this exact real result was already computed once and
-    # persisted to the free external cache - restore it instead of
-    # re-downloading the multi-GB granule and re-running the full pipeline.
-    if download_analysis_result and download_analysis_result(analysis_id, result_dir):
-        with open(summary_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        cached["cache_source"] = "external"
-        return cached
+        # Cache hit (external): local disk was wiped (e.g. a Render free-tier
+        # restart) but this exact real result was already computed once and
+        # persisted to the free external cache - restore it instead of
+        # re-downloading the multi-GB granule and re-running the full pipeline.
+        if download_analysis_result and download_analysis_result(analysis_id, result_dir):
+            with open(summary_path) as f:
+                cached = json.load(f)
+            cached["cached"] = True
+            cached["cache_source"] = "external"
+            return cached
 
-    # Fail fast (synchronously) if the granules aren't downloaded yet - this
-    # is a fast local check, not real processing, so it's fine in the thin handler.
-    _resolve_granule_path(request.before_granule_id)
-    _resolve_granule_path(request.after_granule_id)
+        # Fail fast (synchronously) if the granules aren't downloaded yet - this
+        # is a fast local check, not real processing, so it's fine in the thin handler.
+        _resolve_granule_path(request.before_granule_id)
+        _resolve_granule_path(request.after_granule_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"UNEXPECTED ERROR in analyze_real_change pre-check: {e}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     with _job_lock:
         existing = _analysis_jobs.get(analysis_id)
