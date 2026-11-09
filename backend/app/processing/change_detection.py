@@ -194,11 +194,15 @@ class ChangeDetectionEngine:
         valid = np.isfinite(change)
         
         if not valid.any():
+            # No valid (finite) pixels at all in this AOI/granule-pair
+            # combination - honestly report "unknown" (null) rather than a
+            # raw NaN, which is not valid JSON and can crash response
+            # serialization further up the stack.
             return {
-                "mean_change_db": np.nan,
-                "std_change_db": np.nan,
-                "min_change_db": np.nan,
-                "max_change_db": np.nan,
+                "mean_change_db": None,
+                "std_change_db": None,
+                "min_change_db": None,
+                "max_change_db": None,
                 "candidate_pixels": 0.0,
                 "candidate_area_km2": 0.0,
             }

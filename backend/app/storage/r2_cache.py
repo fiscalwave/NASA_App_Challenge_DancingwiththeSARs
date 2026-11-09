@@ -92,8 +92,11 @@ def download_analysis_result(analysis_id: str, result_dir: Path) -> bool:
     Attempt to restore a previously-cached completed real analysis from the
     external cache into the local result_dir (e.g. after a Render free-tier
     restart wiped the local disk). Returns True only if summary.json was
-    successfully restored - the minimum needed to consider this a real
-    cache hit.
+    successfully restored AND is genuinely valid JSON - the minimum needed
+    to consider this a real cache hit. A partial/corrupted upload (e.g. from
+    an earlier attempt that crashed mid-upload) is treated as a cache miss
+    so the caller falls through to a fresh real recomputation, rather than
+    ever trusting broken cached data.
     """
     if not ENABLED:
         return False
@@ -112,10 +115,32 @@ def download_analysis_result(analysis_id: str, result_dir: Path) -> bool:
                 local_path = result_dir / filename
                 client.download_file(R2_BUCKET_NAME, key, str(local_path))
                 found_any = True
-        restored = found_any and (result_dir / "summary.json").exists()
-        if restored:
-            logger.info(f"Restored real analysis result {analysis_id} from external cache")
-        return restored
+
+        summary_path = result_dir / "summary.json"
+        if not (found_any and summary_path.exists()):
+            return False
+
+        try:
+            import json
+
+            def _reject_non_finite(_):
+                raise ValueError("summary.json contains a non-finite (NaN/Infinity) value")
+
+            with open(summary_path) as f:
+                json.load(f, parse_constant=_reject_non_finite)
+        except (ValueError, OSError) as e:
+            logger.warning(
+                f"Restored summary.json for {analysis_id} from external cache is invalid "
+                f"({e}) - treating as a cache miss and discarding it."
+            )
+            try:
+                summary_path.unlink()
+            except OSError:
+                pass
+            return False
+
+        logger.info(f"Restored real analysis result {analysis_id} from external cache")
+        return True
     except Exception as e:
         logger.warning(f"Could not restore analysis result {analysis_id} from external cache: {e}")
         return False

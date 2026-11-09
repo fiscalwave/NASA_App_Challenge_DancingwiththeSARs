@@ -809,6 +809,29 @@ def _analysis_id_for(request: AnalyzeRequest) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
+def _load_json_safe(path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Load a cached JSON result file, rejecting any NaN/Infinity tokens
+    (non-standard JSON that real statistics could contain from an older
+    version of the pipeline, or from an edge case with zero valid pixels).
+    Returns None - and deletes the bad file - instead of ever returning
+    data that would crash response serialization or be silently wrong.
+    """
+    def _reject_non_finite(_):
+        raise ValueError("file contains a non-finite (NaN/Infinity) value")
+
+    try:
+        with open(path) as f:
+            return json.load(f, parse_constant=_reject_non_finite)
+    except (ValueError, OSError) as e:
+        print(f"Discarding invalid cached file {path}: {e}")
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+
+
 def _run_real_analysis(analysis_id: str, request: "AnalyzeRequest", result_dir: Path, summary_path: Path) -> None:
     """
     The actual real GCOV processing work (runs in a background thread - see
@@ -973,21 +996,21 @@ async def analyze_real_change(request: AnalyzeRequest):
     try:
         # Cache hit: identical request already processed - skip reprocessing
         if summary_path.exists():
-            with open(summary_path) as f:
-                cached = json.load(f)
-            cached["cached"] = True
-            return cached
+            cached = _load_json_safe(summary_path)
+            if cached is not None:
+                cached["cached"] = True
+                return cached
 
         # Cache hit (external): local disk was wiped (e.g. a Render free-tier
         # restart) but this exact real result was already computed once and
         # persisted to the free external cache - restore it instead of
         # re-downloading the multi-GB granule and re-running the full pipeline.
         if download_analysis_result and download_analysis_result(analysis_id, result_dir):
-            with open(summary_path) as f:
-                cached = json.load(f)
-            cached["cached"] = True
-            cached["cache_source"] = "external"
-            return cached
+            cached = _load_json_safe(summary_path)
+            if cached is not None:
+                cached["cached"] = True
+                cached["cache_source"] = "external"
+                return cached
 
         # Fail fast (synchronously) if the granules aren't downloaded yet - this
         # is a fast local check, not real processing, so it's fine in the thin handler.
@@ -1025,21 +1048,21 @@ async def get_analyze_status(analysis_id: str):
     summary_path = result_dir / "summary.json"
 
     if summary_path.exists():
-        with open(summary_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        return cached
+        cached = _load_json_safe(summary_path)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
 
     with _job_lock:
         job = _analysis_jobs.get(analysis_id)
 
     if job is None:
         if download_analysis_result and download_analysis_result(analysis_id, result_dir):
-            with open(summary_path) as f:
-                cached = json.load(f)
-            cached["cached"] = True
-            cached["cache_source"] = "external"
-            return cached
+            cached = _load_json_safe(summary_path)
+            if cached is not None:
+                cached["cached"] = True
+                cached["cache_source"] = "external"
+                return cached
         raise HTTPException(status_code=404, detail="No analysis found or in progress for this analysis_id")
 
     if job.get("status") == "failed":
@@ -1225,10 +1248,10 @@ async def analyze_infrastructure_impact(analysis_id: str):
         download_single_file(analysis_id, "possible_flood.geojson", flood_geojson_path)
 
     if impact_path.exists():
-        with open(impact_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        return cached
+        cached = _load_json_safe(impact_path)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
 
     with _job_lock:
         existing = _impact_jobs.get(analysis_id)
@@ -1254,10 +1277,10 @@ async def get_impact_status(analysis_id: str):
     impact_path = result_dir / "impact.json"
 
     if impact_path.exists():
-        with open(impact_path) as f:
-            cached = json.load(f)
-        cached["cached"] = True
-        return cached
+        cached = _load_json_safe(impact_path)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
 
     with _job_lock:
         job = _impact_jobs.get(analysis_id)
