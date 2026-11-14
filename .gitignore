@@ -6,6 +6,7 @@ data/scenes/*.h5
 data/scenes/*.hdf5
 backend/data/cache/
 backend/data/analysis_cache/
+backend/data/featured_cache.json
 
 # Environment files with secrets (never commit real credentials)
 .env

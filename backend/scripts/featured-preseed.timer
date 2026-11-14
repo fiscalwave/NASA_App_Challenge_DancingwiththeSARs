@@ -1,0 +1,13 @@
+[Unit]
+Description=Run VAMIKA Featured Locations pre-seed/refresh once a day
+
+[Timer]
+# Once a day, a few hours after NISAR's typical daily processing/publishing
+# window, with a random spread so it doesn't hammer CMR/Earthdata/Overpass
+# at exactly the same second every day.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

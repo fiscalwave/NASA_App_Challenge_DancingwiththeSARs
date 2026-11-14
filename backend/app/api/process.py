@@ -104,7 +104,7 @@ async def analyze_flood_change(request: ProcessRequestModel):
         
         # Generate classification masks
         logger.info("Generating flood classification masks...")
-        possible_flood, persistent_low_backscatter, screening_stats = (
+        possible_flood, possible_flooded_vegetation, persistent_low_backscatter, screening_stats = (
             ChangeDetectionEngine.create_flood_classification_masks(
                 aligned_before,
                 aligned_after,
@@ -140,6 +140,11 @@ async def analyze_flood_change(request: ProcessRequestModel):
             after_data["transform"],
             after_data["crs"]
         )
+        possible_flooded_vegetation_tiff = GeoTIFFExporter.export_to_geotiff(
+            possible_flooded_vegetation,
+            after_data["transform"],
+            after_data["crs"]
+        )
         persistent_water_tiff = GeoTIFFExporter.export_to_geotiff(
             persistent_low_backscatter,
             after_data["transform"],
@@ -161,6 +166,7 @@ async def analyze_flood_change(request: ProcessRequestModel):
                 "after_geotiff": "base64:" + after_tiff.hex()[:50] + "...",
                 "change_geotiff": "base64:" + change_tiff.hex()[:50] + "...",
                 "possible_flood_geotiff": "base64:" + possible_flood_tiff.hex()[:50] + "...",
+                "possible_flooded_vegetation_geotiff": "base64:" + possible_flooded_vegetation_tiff.hex()[:50] + "...",
                 "persistent_water_geotiff": "base64:" + persistent_water_tiff.hex()[:50] + "...",
             },
             "pixel_area_km2": pixel_area_km2,
@@ -168,6 +174,7 @@ async def analyze_flood_change(request: ProcessRequestModel):
         
         logger.info("Analysis complete")
         logger.info(f"Possible flood area: {screening_stats['possible_flood_area_km2']:.2f} km²")
+        logger.info(f"Possible flooded vegetation area: {screening_stats['possible_flooded_vegetation_area_km2']:.2f} km²")
         logger.info(f"Persistent water area: {screening_stats['persistent_low_backscatter_area_km2']:.2f} km²")
         
         return ProcessResponseModel(

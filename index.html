@@ -113,6 +113,74 @@
             }
         }
 
+        /* TIER 1: FEATURED LOCATIONS GRID */
+        .featured-locations-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 0.9rem;
+        }
+
+        .featured-location-tile {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 0.9rem;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+
+        .featured-location-tile:hover {
+            border-color: rgba(96, 165, 250, 0.6);
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        .featured-location-tile .flt-name {
+            font-weight: 600;
+            color: #fff;
+            font-size: 0.95rem;
+        }
+
+        .featured-location-tile .flt-country {
+            color: #94a3b8;
+            font-size: 0.78rem;
+            margin-bottom: 0.4rem;
+        }
+
+        .featured-location-tile .flt-blurb {
+            color: #cbd5e1;
+            font-size: 0.78rem;
+            line-height: 1.3;
+            margin-bottom: 0.5rem;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .flt-badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            font-weight: 600;
+            padding: 0.15rem 0.5rem;
+            border-radius: 20px;
+            margin-right: 0.3rem;
+        }
+
+        .flt-badge.flt-ready {
+            background: rgba(34, 197, 94, 0.2);
+            color: #4ade80;
+        }
+
+        .flt-badge.flt-pending {
+            background: rgba(148, 163, 184, 0.2);
+            color: #94a3b8;
+        }
+
+        .flt-badge.flt-category {
+            background: rgba(96, 165, 250, 0.2);
+            color: #60a5fa;
+        }
+
         /* PARAMETERS CARD */
         .card.parameters-card {
             width: 100%;
@@ -384,13 +452,8 @@
         }
 
         .inundation-moderate {
-            background: #ffa500;
-            box-shadow: 0 0 8px rgba(255, 165, 0, 0.6);
-        }
-
-        .inundation-low {
-            background: #00d9ff;
-            box-shadow: 0 0 8px rgba(0, 217, 255, 0.6);
+            background: #39ff14;
+            box-shadow: 0 0 8px rgba(57, 255, 20, 0.6);
         }
 
         /* PHASE 1: CONFIDENCE BADGE */
@@ -886,6 +949,18 @@
             <p>Search for flood-affected areas by location, set analysis parameters, and discover available NISAR satellite scenes</p>
         </section>
 
+        <!-- TIER 1: FEATURED LOCATIONS (pre-seeded, instant real-data demo) -->
+        <div class="card" id="featuredLocationsCard" style="display: none; margin-bottom: 2rem;">
+            <h3>Featured Locations</h3>
+            <p style="color: #94a3b8; font-size: 0.9rem; margin-top: -0.5rem; margin-bottom: 1rem;">
+                25 real, globally diverse flood/wetland-significant places. Locations marked "Ready" already have a
+                real NISAR before/after analysis pre-computed and cached - click one to load it instantly instead of
+                waiting on a fresh multi-gigabyte download. Locations without a cached result yet still link straight
+                into a normal live search.
+            </p>
+            <div id="featuredLocationsGrid" class="featured-locations-grid"></div>
+        </div>
+
         <!-- CONTENT GRID -->
         <div class="content-grid">
             <!-- PARAMETERS CARD -->
@@ -925,6 +1000,25 @@
                     <div class="form-input">
                         <input type="text" id="endDate" placeholder="YYYY-MM-DD (e.g., 2025-03-01)" value="2025-03-01" />
                     </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="polarizationSelect">Polarization</label>
+                    <div class="form-input">
+                        <select id="polarizationSelect">
+                            <option value="HHHH" selected>HH (co-pol) - best for open water / flood (default)</option>
+                            <option value="HVHV">HV (cross-pol) - best for vegetation structure</option>
+                            <option value="VVVV">VV (co-pol) - alternative surface/water sensitivity</option>
+                            <option value="VHVH">VH (cross-pol) - alternative vegetation sensitivity</option>
+                            <option value="HHHV">HH-HV (co/cross covariance)</option>
+                            <option value="VVVH">VV-VH (co/cross covariance)</option>
+                        </select>
+                    </div>
+                    <small style="color: #94a3b8; font-size: 0.78rem; display: block; margin-top: 0.3rem;">
+                        NISAR GCOV real polarimetric channel used for change detection. HH is recommended for flood
+                        mapping (strongest surface/double-bounce response); not every channel is present in every
+                        granule.
+                    </small>
                 </div>
 
                 <div class="form-buttons">
@@ -988,18 +1082,14 @@
                     
                     <!-- INUNDATION LEGEND -->
                     <div class="inundation-legend" id="inundationLegend" style="display: none;">
-                        <div style="font-weight: 600; margin-bottom: 0.75rem; color: #fff;">Inundation Classification</div>
+                        <div style="font-weight: 600; margin-bottom: 0.75rem; color: #fff;">Real Flood Signatures (NISAR L-band backscatter)</div>
                         <div class="inundation-legend-item">
                             <div class="inundation-swatch inundation-high"></div>
-                            <span>High Confidence Flood</span>
+                            <span>Open Water (backscatter decreased)</span>
                         </div>
                         <div class="inundation-legend-item">
                             <div class="inundation-swatch inundation-moderate"></div>
-                            <span>Moderate Change</span>
-                        </div>
-                        <div class="inundation-legend-item">
-                            <div class="inundation-swatch inundation-low"></div>
-                            <span>Low Confidence</span>
+                            <span>Flooded Vegetation (backscatter increased - double bounce)</span>
                         </div>
                     </div>
                     
@@ -1039,8 +1129,18 @@
             <h3>Affected Area Analysis</h3>
 
             <div class="metric-row">
-                <span class="label">Flooded Area (real, from NISAR backscatter change):</span>
+                <span class="label">Total Flood Extent (real, from NISAR backscatter change):</span>
                 <span class="value" id="floodedAreaValue">0 km²</span>
+            </div>
+
+            <div class="metric-row" style="padding-left: 1rem;">
+                <span class="label" style="font-size: 0.85rem; color: #94a3b8;">↳ Open Water (backscatter decrease)</span>
+                <span class="value" id="openWaterAreaValue" style="font-size: 0.9rem;">0 km²</span>
+            </div>
+
+            <div class="metric-row" style="padding-left: 1rem;">
+                <span class="label" style="font-size: 0.85rem; color: #94a3b8;">↳ Flooded Vegetation (backscatter increase - double bounce)</span>
+                <span class="value" id="floodedVegetationAreaValue" style="font-size: 0.9rem;">0 km²</span>
             </div>
 
             <div class="metric-row">
@@ -1150,6 +1250,21 @@
 
         <!-- RESULTS SECTION -->
         <div class="results-container" id="resultsSection" style="display: none;">
+            <!-- PHASE 8: ACQUISITION PAIR / MINI TIME-SERIES SELECTOR (only
+                 shown when CMR found more than one real compatible
+                 before/after pair - lets the user compare different real
+                 date pairs instead of always using the first one found) -->
+            <div class="form-group" id="pairSelectorGroup" style="display: none; margin-bottom: 1.5rem;">
+                <label for="pairSelect">Compare Acquisition Pair (real dates found by NASA CMR)</label>
+                <div class="form-input">
+                    <select id="pairSelect"></select>
+                </div>
+                <small style="color: #94a3b8; font-size: 0.78rem; display: block; margin-top: 0.3rem;">
+                    Multiple real compatible before/after pairs (same track/frame/pass direction) were found for this
+                    area. Switch pairs to compare change across different real dates.
+                </small>
+            </div>
+
             <h3>Available NISAR Acquisitions</h3>
             <table class="scene-table">
                 <thead>
@@ -1175,7 +1290,7 @@
 
     <script>
         // Map initialization
-        let map, locationCircle, locationMarker, floodOverlay;
+        let map, locationCircle, locationMarker, floodOverlay, vegetationFloodOverlay;
 
         // Holds the parameters of the current search (location/radius/dates,
         // plus the real analysis_id and fetched flood GeoJSON once a real
@@ -1197,38 +1312,52 @@
             }).addTo(map);
         }
 
-        // Load and render the REAL detected flood polygon (produced by the
+        // Load and render the REAL detected flood polygons (produced by the
         // backend's Phase 5 change-detection pipeline from actual NISAR
-        // backscatter data) as a GeoJSON overlay on the map. Replaces the
-        // previous procedurally-generated fake flood-zone circles.
-        async function renderRealFloodOverlay(geojsonUrl) {
+        // backscatter data) as GeoJSON overlays on the map - two distinct,
+        // physically different signatures (see NASA/JPL "Floods" StoryMap):
+        // open water (backscatter decrease, neon orange) and flooded
+        // vegetation (backscatter increase / double-bounce, lime green).
+        // Replaces the previous procedurally-generated fake flood-zone circles.
+        async function renderRealFloodOverlay(geojsonUrl, vegetationGeojsonUrl) {
             if (floodOverlay) {
                 map.removeLayer(floodOverlay);
                 floodOverlay = null;
             }
+            if (vegetationFloodOverlay) {
+                map.removeLayer(vegetationFloodOverlay);
+                vegetationFloodOverlay = null;
+            }
 
-            try {
-                const response = await fetch(geojsonUrl);
-                if (!response.ok) throw new Error(`Could not load flood overlay (HTTP ${response.status})`);
-                const geojson = await response.json();
+            let combinedBounds = null;
 
-                if (!geojson.features || geojson.features.length === 0) {
-                    console.log('No possible-flood polygons were produced for this AOI/thresholds.');
-                    return;
+            async function loadLayer(url, color) {
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) throw new Error(`Could not load flood overlay (HTTP ${response.status})`);
+                    const geojson = await response.json();
+                    if (!geojson.features || geojson.features.length === 0) return null;
+
+                    const layer = L.geoJSON(geojson, {
+                        style: { color, weight: 1, fillColor: color, fillOpacity: 0.45 }
+                    }).addTo(map);
+                    combinedBounds = combinedBounds ? combinedBounds.extend(layer.getBounds()) : layer.getBounds();
+                    return layer;
+                } catch (error) {
+                    console.error(`Could not load real flood overlay (${url}):`, error);
+                    return null;
                 }
+            }
 
-                floodOverlay = L.geoJSON(geojson, {
-                    style: {
-                        color: '#ff6b00',
-                        weight: 1,
-                        fillColor: '#ff6b00',
-                        fillOpacity: 0.45
-                    }
-                }).addTo(map);
+            floodOverlay = await loadLayer(geojsonUrl, '#ff6b00');
+            if (vegetationGeojsonUrl) {
+                vegetationFloodOverlay = await loadLayer(vegetationGeojsonUrl, '#39ff14');
+            }
 
-                map.fitBounds(floodOverlay.getBounds(), { padding: [50, 50], maxZoom: 15 });
-            } catch (error) {
-                console.error('Could not load real flood overlay:', error);
+            if (combinedBounds) {
+                map.fitBounds(combinedBounds, { padding: [50, 50], maxZoom: 15 });
+            } else {
+                console.log('No possible-flood polygons were produced for this AOI/thresholds.');
             }
 
             return floodOverlay;
@@ -1255,6 +1384,7 @@
             document.getElementById('exportMenuCard').style.display = 'none';
             document.getElementById('confidenceBadge').style.display = 'none';
             document.getElementById('inundationLegend').style.display = 'none';
+            document.getElementById('pairSelectorGroup').style.display = 'none';
 
             // Clear infrastructure layer overlays and uncheck their toggles
             clearInfrastructureLayers();
@@ -1267,6 +1397,7 @@
             if (locationCircle) map.removeLayer(locationCircle);
             if (locationMarker) map.removeLayer(locationMarker);
             if (floodOverlay) map.removeLayer(floodOverlay);
+            if (vegetationFloodOverlay) map.removeLayer(vegetationFloodOverlay);
             map.setView([45.4408, 12.3155], 12);
         }
 
@@ -1432,6 +1563,116 @@
             }
         });
 
+        // ========== TIER 1: FEATURED LOCATIONS (pre-seeded instant demo) ==========
+        async function loadFeaturedLocations() {
+            try {
+                const resp = await fetch('/api/v2/featured');
+                if (!resp.ok) return; // non-fatal - the normal search flow still works
+                const data = await resp.json();
+                const locations = data.locations || [];
+                if (locations.length === 0) return;
+
+                const grid = document.getElementById('featuredLocationsGrid');
+                grid.innerHTML = locations.map((loc, i) => `
+                    <div class="featured-location-tile" data-index="${i}">
+                        <div class="flt-name">${loc.name}</div>
+                        <div class="flt-country">${loc.country}</div>
+                        <div class="flt-blurb">${loc.blurb}</div>
+                        <span class="flt-badge flt-category">${loc.category}</span>
+                        <span class="flt-badge ${loc.ready ? 'flt-ready' : 'flt-pending'}">${loc.ready ? 'Ready - instant' : 'Not pre-seeded yet'}</span>
+                    </div>
+                `).join('');
+
+                grid.querySelectorAll('.featured-location-tile').forEach(tile => {
+                    tile.addEventListener('click', () => {
+                        const loc = locations[parseInt(tile.dataset.index, 10)];
+                        if (loc.ready) {
+                            loadFeaturedLocationInstant(loc);
+                        } else {
+                            loadFeaturedLocationLive(loc);
+                        }
+                    });
+                });
+
+                document.getElementById('featuredLocationsCard').style.display = 'block';
+            } catch (error) {
+                console.warn('Could not load featured locations (non-fatal):', error);
+            }
+        }
+
+        // Fills the search form from a curated location and runs it through the
+        // exact same live discover -> download -> analyze -> impact pipeline as
+        // a manual search - used for locations that have not been pre-seeded yet.
+        function loadFeaturedLocationLive(loc) {
+            document.getElementById('locationInput').value = `${loc.lat}, ${loc.lon}`;
+            document.getElementById('radiusInput').value = loc.radius_km;
+            document.getElementById('startDate').value = '2026-01-01';
+            document.getElementById('endDate').value = new Date().toISOString().slice(0, 10);
+            document.getElementById('searchBtn').click();
+        }
+
+        // Instantly loads a pre-seeded real analysis (computed ahead of time by
+        // scripts/preseed_featured_locations.py) - replays the exact same real
+        // before/after request against /api/v2/analyze, which is a cache hit
+        // (no new download, no reprocessing), then renders results exactly like
+        // a live search would.
+        async function loadFeaturedLocationInstant(loc) {
+            const generation = ++searchGeneration;
+            resetAllFields();
+            // resetAllFields() bumps searchGeneration again to invalidate any
+            // in-flight work - reclaim it as the generation for this load.
+            searchGeneration = generation;
+
+            document.getElementById('locationInput').value = `${loc.lat}, ${loc.lon}`;
+            document.getElementById('radiusInput').value = loc.radius_km;
+            if (loc.before_date) document.getElementById('startDate').value = loc.before_date.slice(0, 10);
+            if (loc.after_date) document.getElementById('endDate').value = loc.after_date.slice(0, 10);
+            updateMap(loc.lat, loc.lon);
+
+            const bounds = getMapBounds();
+            currentSearchContext = {
+                lat: loc.lat, lon: loc.lon, radiusKm: loc.radius_km,
+                locationText: `${loc.name}, ${loc.country}`, startDate: loc.before_date, endDate: loc.after_date, bounds
+            };
+
+            const req = loc.analysis_request;
+            const beforeMeta = { granule_id: req.before_granule_id, time_start: loc.before_date, track: '-', frame: '-', pass_direction: '-', tier: '-' };
+            const afterMeta = { granule_id: req.after_granule_id, time_start: loc.after_date, track: '-', frame: '-', pass_direction: '-', tier: '-' };
+            populateAcquisitionsTable([beforeMeta, afterMeta]);
+            document.getElementById('resultsSection').style.display = 'block';
+            document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+
+            try {
+                showGlobalStatus(`Loading pre-seeded real analysis for ${loc.name}...`);
+                const summary = await startAndPollJob(
+                    fetch('/api/v2/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            before_granule_id: req.before_granule_id,
+                            after_granule_id: req.after_granule_id,
+                            polarization: req.polarization,
+                            bounds: { west: req.bounds[0], south: req.bounds[1], east: req.bounds[2], north: req.bounds[3] }
+                        })
+                    }),
+                    'Loading pre-seeded real analysis',
+                    generation
+                );
+                if (generation !== searchGeneration || !summary) return;
+
+                currentSearchContext.analysisId = summary.analysis_id;
+                currentSearchContext.confidence = summary.detection_confidence ? summary.detection_confidence.confidence : null;
+                populateAcquisitionsTable([beforeMeta, afterMeta]);
+
+                await displayRealResults(summary, 'loading');
+                computeRealImpactInBackground(summary, generation);
+            } catch (error) {
+                if (generation !== searchGeneration) return;
+                hideGlobalStatus();
+                alert(`Could not load pre-seeded location: ${error.message}`);
+            }
+        }
+
         function showGlobalStatus(message) {
             const section = document.getElementById('resultsSection');
             section.style.display = 'block';
@@ -1594,12 +1835,65 @@
                 return;
             }
 
-            const pair = discover.compatible_pairs[0];
+            populatePairSelector(discover.compatible_pairs, allGranules, bounds, generation);
+            await runAnalysisForPair(discover.compatible_pairs[0], allGranules, bounds, generation);
+        }
+
+        // Shows (and wires up) the acquisition-pair selector when NASA CMR
+        // found more than one real compatible before/after pair for this
+        // area, so the user can compare change across different real dates
+        // (a lightweight real "time series") instead of only ever seeing the
+        // first pair found.
+        function populatePairSelector(compatiblePairs, allGranules, bounds, generation) {
+            const group = document.getElementById('pairSelectorGroup');
+            const select = document.getElementById('pairSelect');
+
+            if (!compatiblePairs || compatiblePairs.length <= 1) {
+                group.style.display = 'none';
+                select.innerHTML = '';
+                return;
+            }
+
+            const describe = (granuleId) => {
+                const meta = allGranules.find(g => g.granule_id === granuleId);
+                return meta && meta.time_start ? meta.time_start.slice(0, 10) : granuleId;
+            };
+
+            select.innerHTML = compatiblePairs
+                .map((pair, i) => `<option value="${i}">${describe(pair.before)} -> ${describe(pair.after)} (${pair.before_tier}/${pair.after_tier} tier)</option>`)
+                .join('');
+            group.style.display = 'block';
+
+            select.onchange = async () => {
+                // Treat a pair switch like a fresh (but narrower) analysis run -
+                // bump the generation so any stale in-flight work for the
+                // previous pair is discarded rather than overwriting these new
+                // results.
+                searchGeneration++;
+                const newGeneration = searchGeneration;
+                const selectedPair = compatiblePairs[parseInt(select.value, 10)];
+                try {
+                    await runAnalysisForPair(selectedPair, allGranules, bounds, newGeneration);
+                } catch (error) {
+                    if (newGeneration === searchGeneration) {
+                        alert(`Could not analyze this acquisition pair: ${error.message}`);
+                    }
+                }
+            };
+        }
+
+        // Runs the real download -> change-detection -> impact pipeline for
+        // one specific before/after granule pair. Extracted so the acquisition-
+        // pair selector can re-run analysis for a different real date pair
+        // without repeating NASA CMR discovery.
+        async function runAnalysisForPair(pair, allGranules, bounds, generation) {
             const beforeMeta = allGranules.find(g => g.granule_id === pair.before);
             const afterMeta = allGranules.find(g => g.granule_id === pair.after);
             if (!beforeMeta || !afterMeta) {
                 throw new Error('Internal error: could not resolve compatible pair granule metadata');
             }
+
+            const polarization = document.getElementById('polarizationSelect').value;
 
             await downloadGranulesInParallel(beforeMeta, afterMeta, generation);
             if (generation !== searchGeneration) return;
@@ -1612,7 +1906,7 @@
                     body: JSON.stringify({
                         before_granule_id: pair.before,
                         after_granule_id: pair.after,
-                        polarization: 'HHHH',
+                        polarization,
                         bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north }
                     })
                 }),
@@ -1700,15 +1994,24 @@
             const section = document.getElementById('resultsSection');
 
             await renderRealSwipeView(summary);
-            await renderRealFloodOverlay(summary.geojson.possible_flood);
+            await renderRealFloodOverlay(summary.geojson.possible_flood, summary.geojson.possible_flooded_vegetation);
             updateConfidenceBadge(summary.detection_confidence);
             renderRealAffectedArea(summary, impact);
 
-            // Store the real flood GeoJSON for honest exports (replaces the
-            // previous circle-approximation export path)
+            // Store the real flood GeoJSON (both open-water and flooded-
+            // vegetation signatures, combined) for honest exports (replaces
+            // the previous circle-approximation export path)
             try {
-                const geojsonResp = await fetch(summary.geojson.possible_flood);
-                currentSearchContext.realFloodGeoJSON = await geojsonResp.json();
+                const [floodResp, vegResp] = await Promise.all([
+                    fetch(summary.geojson.possible_flood),
+                    fetch(summary.geojson.possible_flooded_vegetation)
+                ]);
+                const floodGeoJSON = await floodResp.json();
+                const vegGeoJSON = await vegResp.json();
+                currentSearchContext.realFloodGeoJSON = {
+                    type: 'FeatureCollection',
+                    features: [...(floodGeoJSON.features || []), ...(vegGeoJSON.features || [])]
+                };
             } catch (e) {
                 console.warn('Could not cache real flood GeoJSON for export:', e);
             }
@@ -1876,8 +2179,14 @@
         // population dataset is integrated, so they are honestly reported as
         // unavailable rather than invented from an area x density formula.
         function renderRealAffectedArea(summary, impact) {
-            const areaKm2 = summary.classification_statistics.possible_flood_area_km2;
-            document.getElementById('floodedAreaValue').textContent = areaKm2.toFixed(2) + ' km²';
+            const stats = summary.classification_statistics;
+            const openWaterKm2 = stats.possible_flood_area_km2;
+            const vegetationKm2 = stats.possible_flooded_vegetation_area_km2 ?? 0;
+            const totalKm2 = stats.total_flood_extent_area_km2 ?? (openWaterKm2 + vegetationKm2);
+
+            document.getElementById('floodedAreaValue').textContent = totalKm2.toFixed(2) + ' km²';
+            document.getElementById('openWaterAreaValue').textContent = openWaterKm2.toFixed(2) + ' km²';
+            document.getElementById('floodedVegetationAreaValue').textContent = vegetationKm2.toFixed(2) + ' km²';
             document.getElementById('affectedPopValue').textContent = 'Not available';
             document.getElementById('damageLowValue').textContent = 'N/A';
             document.getElementById('damageHighValue').textContent = 'N/A';
@@ -2285,6 +2594,7 @@ ${placemarks}
         window.addEventListener('load', () => {
             initMap();
             initializeSwipeView();
+            loadFeaturedLocations();
             
             // Add event listener to location input for blur (focus lost) event
             document.getElementById('locationInput').addEventListener('blur', () => {

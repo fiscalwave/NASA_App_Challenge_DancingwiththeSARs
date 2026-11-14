@@ -38,7 +38,8 @@ class SARBackscatterRenderer:
                                backscatter_db: Optional[np.ndarray] = None,
                                title: str = "SAR Backscatter",
                                colormap: str = "grayscale",
-                               inundation_mask: Optional[np.ndarray] = None) -> Image.Image:
+                               inundation_mask: Optional[np.ndarray] = None,
+                               vegetation_flood_mask: Optional[np.ndarray] = None) -> Image.Image:
         """
         Render SAR backscatter as a visualization image.
         
@@ -46,7 +47,9 @@ class SARBackscatterRenderer:
             backscatter_db: 2D array of backscatter values in dB (or None for synthetic)
             title: Title text to display
             colormap: Color scheme ('grayscale', 'radar', 'thermal')
-            inundation_mask: Optional binary mask for flood areas
+            inundation_mask: Optional binary mask for open-water flood areas (radar-dark)
+            vegetation_flood_mask: Optional binary mask for flooded-vegetation areas
+                (radar-bright, double-bounce signature - distinct from open water)
         
         Returns:
             PIL Image object
@@ -66,9 +69,9 @@ class SARBackscatterRenderer:
         else:
             img = self._render_grayscale(backscatter_db)
         
-        # Add inundation overlay if provided
-        if inundation_mask is not None:
-            img = self._add_inundation_overlay(img, inundation_mask)
+        # Add inundation overlay(s) if provided
+        if inundation_mask is not None or vegetation_flood_mask is not None:
+            img = self._add_inundation_overlay(img, inundation_mask, vegetation_flood_mask)
         
         # Add metadata and title
         img = self._add_metadata(img, title)
@@ -195,10 +198,15 @@ class SARBackscatterRenderer:
         img = Image.fromarray(img_array, mode='RGB')
         return img
     
-    def _add_inundation_overlay(self, 
-                                img: Image.Image, 
-                                inundation_mask: np.ndarray) -> Image.Image:
-        """Add neon orange inundation overlay to detected flood areas."""
+    def _add_inundation_overlay(self,
+                                img: Image.Image,
+                                inundation_mask: Optional[np.ndarray],
+                                vegetation_flood_mask: Optional[np.ndarray] = None) -> Image.Image:
+        """Add distinct overlay colors for the two real SAR flood signatures:
+        neon orange for open-water inundation (radar-dark, specular
+        scattering) and lime green for flooded vegetation (radar-bright,
+        double-bounce scattering) - see NASA/JPL "Floods" StoryMap
+        (https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd)."""
         
         # Convert grayscale to RGB if needed
         if img.mode == 'L':
@@ -206,13 +214,22 @@ class SARBackscatterRenderer:
         
         # Create overlay
         overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
         
-        # Apply neon orange color (#FF6B00) with transparency to flood mask
-        for i in range(self.height):
-            for j in range(self.width):
-                if inundation_mask[i, j] > 0.5:  # If pixel is marked as flooded
-                    overlay.putpixel((j, i), (255, 107, 0, 120))  # Neon orange, 47% opacity
+        # Apply neon orange color (#FF6B00) with transparency to open-water flood mask
+        if inundation_mask is not None:
+            for i in range(self.height):
+                for j in range(self.width):
+                    if inundation_mask[i, j] > 0.5:  # If pixel is marked as flooded
+                        overlay.putpixel((j, i), (255, 107, 0, 120))  # Neon orange, 47% opacity
+
+        # Apply lime green color (#39FF14) to flooded-vegetation mask - kept
+        # visually distinct from open water since it's a physically different
+        # SAR signature (backscatter increase, not decrease)
+        if vegetation_flood_mask is not None:
+            for i in range(self.height):
+                for j in range(self.width):
+                    if vegetation_flood_mask[i, j] > 0.5:
+                        overlay.putpixel((j, i), (57, 255, 20, 120))  # Lime green, 47% opacity
         
         # Composite overlay onto base image
         img = img.convert('RGBA')
@@ -297,6 +314,7 @@ def render_real_sar_layer(
     title: str,
     colormap: str = "grayscale",
     inundation_mask_path: Optional[str] = None,
+    vegetation_flood_mask_path: Optional[str] = None,
 ) -> str:
     """
     Render a REAL SAR backscatter GeoTIFF (produced by Phase 5's
@@ -316,12 +334,18 @@ def render_real_sar_layer(
         with rasterio.open(inundation_mask_path) as src:
             inundation_mask = src.read(1).astype(np.float32)
 
+    vegetation_flood_mask = None
+    if vegetation_flood_mask_path:
+        with rasterio.open(vegetation_flood_mask_path) as src:
+            vegetation_flood_mask = src.read(1).astype(np.float32)
+
     renderer = SARBackscatterRenderer(width=backscatter_db.shape[1], height=backscatter_db.shape[0])
     img = renderer.render_sar_backscatter(
         backscatter_db=backscatter_db,
         title=title,
         colormap=colormap,
         inundation_mask=inundation_mask,
+        vegetation_flood_mask=vegetation_flood_mask,
     )
     return renderer.to_base64_png(img)
 

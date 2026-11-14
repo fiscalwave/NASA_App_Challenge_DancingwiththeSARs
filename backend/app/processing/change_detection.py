@@ -104,21 +104,38 @@ class ChangeDetectionEngine:
         flood_change_threshold_db: float = -2.0,
         low_backscatter_threshold_db: float = -15.0,
         pixel_area_km2: float = 1.0,
-    ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+        vegetation_increase_threshold_db: float = 2.0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
         """
         Create flood detection and water classification masks.
-        
-        Classification logic:
-        
-        POSSIBLE_FLOOD:
+
+        Classification logic implements two distinct, physically-documented
+        SAR flood signatures (see NASA/JPL "Floods" StoryMap:
+        https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd) -
+        radar brightness is NOT one-directional for flooding:
+
+        POSSIBLE_FLOOD (open water - specular/surface scattering, radar-DARK):
         - Backscatter decreased significantly (≤ -flood_change_threshold_db)
-        - Post-event backscatter is low (≤ -low_backscatter_threshold_db)
-        - Indicates surface became smoother, consistent with open water
-        
+        - Post-event backscatter is low (≤ low_backscatter_threshold_db)
+        - Indicates surface became smoother, consistent with new open water
+
+        POSSIBLE_FLOODED_VEGETATION (double-bounce scattering, radar-BRIGHT):
+        - Backscatter increased significantly (≥ vegetation_increase_threshold_db)
+        - Pre-event surface was not already water-like (before > low_backscatter_threshold_db)
+        - Indicates water now present beneath standing vegetation/forest canopy:
+          the double-bounce path (ground -> canopy -> sensor) makes these
+          areas brighter, not darker. This signature is often the dominant
+          one in forested floodplains and wetlands, where open-water-only
+          detection under-estimates true flood extent.
+
         PERSISTENT_LOW_BACKSCATTER:
-        - Both pre and post have low backscatter (≤ -low_backscatter_threshold_db)
+        - Both pre and post have low backscatter (≤ low_backscatter_threshold_db)
         - Likely permanent water or permanent smooth surfaces
-        
+
+        The two "new flood" signatures are mutually exclusive (one requires a
+        backscatter decrease, the other an increase), so their pixel counts
+        can be summed directly for a combined total without double-counting.
+
         Args:
             before: Pre-event backscatter in dB
             after: Post-event backscatter in dB
@@ -126,12 +143,14 @@ class ChangeDetectionEngine:
             flood_change_threshold_db: Minimum backscatter decrease to flag as potential flood
             low_backscatter_threshold_db: Backscatter threshold for water-like surfaces
             pixel_area_km2: Area per pixel for area calculations
-            
+            vegetation_increase_threshold_db: Minimum backscatter increase to flag potential flooded vegetation
+
         Returns:
             Tuple of:
-                - possible_flood: Binary mask of potential new inundation
+                - possible_flood: Binary mask of potential new open-water inundation
+                - possible_flooded_vegetation: Binary mask of potential new flooded vegetation
                 - persistent_low_backscatter: Binary mask of permanent water
-                - stats: Dictionary with area and pixel counts
+                - stats: Dictionary with area and pixel counts (including the combined total)
         """
         try:
             # Create validity mask
@@ -139,12 +158,18 @@ class ChangeDetectionEngine:
             
             # Initialize masks
             possible_flood = np.full(change.shape, np.nan, dtype=np.float32)
+            possible_flooded_vegetation = np.full(change.shape, np.nan, dtype=np.float32)
             persistent_low_backscatter = np.full(change.shape, np.nan, dtype=np.float32)
             
             # Apply classification logic
             possible_flood[valid] = (
                 (change[valid] <= -flood_change_threshold_db)
                 & (after[valid] <= low_backscatter_threshold_db)
+            ).astype(np.float32)
+
+            possible_flooded_vegetation[valid] = (
+                (change[valid] >= vegetation_increase_threshold_db)
+                & (before[valid] > low_backscatter_threshold_db)
             ).astype(np.float32)
             
             persistent_low_backscatter[valid] = (
@@ -155,23 +180,31 @@ class ChangeDetectionEngine:
             # Calculate statistics
             valid_pixels = int(valid.sum())
             possible_flood_pixels = float(np.nansum(possible_flood))
+            flooded_vegetation_pixels = float(np.nansum(possible_flooded_vegetation))
             persistent_pixels = float(np.nansum(persistent_low_backscatter))
+            total_flood_pixels = possible_flood_pixels + flooded_vegetation_pixels
             
             stats = {
                 "possible_flood_pixels": possible_flood_pixels,
+                "possible_flooded_vegetation_pixels": flooded_vegetation_pixels,
                 "persistent_low_backscatter_pixels": persistent_pixels,
                 "possible_flood_area_km2": possible_flood_pixels * pixel_area_km2,
+                "possible_flooded_vegetation_area_km2": flooded_vegetation_pixels * pixel_area_km2,
                 "persistent_low_backscatter_area_km2": persistent_pixels * pixel_area_km2,
+                "total_flood_extent_pixels": total_flood_pixels,
+                "total_flood_extent_area_km2": total_flood_pixels * pixel_area_km2,
                 "valid_pixels": float(valid_pixels),
             }
             
             logger.info(
                 f"Classification complete: "
-                f"possible_flood_area={stats['possible_flood_area_km2']:.2f}km², "
+                f"open_water_flood_area={stats['possible_flood_area_km2']:.2f}km², "
+                f"flooded_vegetation_area={stats['possible_flooded_vegetation_area_km2']:.2f}km², "
+                f"total_flood_extent_area={stats['total_flood_extent_area_km2']:.2f}km², "
                 f"persistent_water_area={stats['persistent_low_backscatter_area_km2']:.2f}km²"
             )
             
-            return possible_flood, persistent_low_backscatter, stats
+            return possible_flood, possible_flooded_vegetation, persistent_low_backscatter, stats
             
         except Exception as e:
             raise ProcessingError(f"Classification failed: {str(e)}")

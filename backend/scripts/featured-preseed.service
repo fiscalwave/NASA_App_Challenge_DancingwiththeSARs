@@ -1,0 +1,15 @@
+[Unit]
+Description=VAMIKA - re-check curated Featured Locations for new real NISAR data
+After=network-online.target vamika.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=technojogi
+WorkingDirectory=/home/technojogi/vamika/backend
+ExecStart=/home/technojogi/vamika/backend/venv/bin/python scripts/preseed_featured_locations.py --base-url http://localhost:8000
+# Only processes locations not already cached (idempotent) - safe to run
+# daily. Pass --force-refresh manually if you want to re-check already-ready
+# locations for newer real acquisitions.
+StandardOutput=append:/home/technojogi/vamika/backend/logs/featured-preseed.log
+StandardError=append:/home/technojogi/vamika/backend/logs/featured-preseed.log
