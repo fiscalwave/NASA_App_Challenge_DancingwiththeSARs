@@ -311,6 +311,15 @@ class SARBackscatterRenderer:
 # detail than a browser swipe comparison needs or can usefully display.
 MAX_DISPLAY_DIM = 1600
 
+# A multi-frame time-series animation/GIF is a trend overview, not a
+# detailed single-image inspection (unlike the swipe view, there is no
+# "full-resolution GeoTIFF" counterpart for this feature to fall back on,
+# so there's no reason to pay 1600px's cost per frame x N frames). GIF's
+# limited-palette LZW compression also handles SAR speckle far worse than
+# PNG does - a 12-frame GIF at MAX_DISPLAY_DIM measured 34.8MB on a real
+# AOI; capping animation frames smaller keeps the download reasonable.
+TIMESERIES_FRAME_MAX_DIM = 700
+
 
 def _decimated_shape(height: int, width: int, max_dim: int = MAX_DISPLAY_DIM) -> Tuple[int, int]:
     """Target (height, width) for display, preserving aspect ratio, capped at max_dim on the longer side."""
@@ -372,11 +381,13 @@ def render_timeseries_frame(backscatter_db: np.ndarray, date_label: str) -> Imag
     animation frame (ASF OpenSARlab NISAR Cookbook section 7, "SAR Time
     Series Animation") - reuses the same real colorization code as the
     before/after swipe view, just titled with its real acquisition date
-    instead of "Before"/"After". Downsamples large real frames (same
-    MAX_DISPLAY_DIM cap as the swipe view) so a multi-frame animation/GIF
-    stays a reasonable size - this is a display convenience only, the full-
-    resolution per-date data (means, pixel counts) is computed before this
-    downsampling happens, never from the downsampled frame.
+    instead of "Before"/"After". Downsamples large real frames (capped at
+    TIMESERIES_FRAME_MAX_DIM, smaller than the swipe view's MAX_DISPLAY_DIM
+    since a multi-frame GIF needs a smaller per-frame size to stay a
+    reasonable download) so a multi-frame animation/GIF stays a reasonable
+    size - this is a display convenience only, the real per-date mean
+    backscatter statistic is computed before this downsampling happens,
+    never from the downsampled frame.
     """
     renderer = SARBackscatterRenderer(width=backscatter_db.shape[1], height=backscatter_db.shape[0])
     img = renderer.render_sar_backscatter(
@@ -384,8 +395,8 @@ def render_timeseries_frame(backscatter_db: np.ndarray, date_label: str) -> Imag
         title=date_label,
         colormap="grayscale",
     )
-    if max(img.size) > MAX_DISPLAY_DIM:
-        scale = MAX_DISPLAY_DIM / max(img.size)
+    if max(img.size) > TIMESERIES_FRAME_MAX_DIM:
+        scale = TIMESERIES_FRAME_MAX_DIM / max(img.size)
         new_size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
         img = img.resize(new_size, Image.LANCZOS)
     return img
