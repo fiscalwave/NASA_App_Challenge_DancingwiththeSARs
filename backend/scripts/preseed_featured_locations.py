@@ -268,14 +268,19 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
           f"(track {before_meta['track']}, frame {before_meta['frame']}, {before_meta['pass_direction']})")
 
     try:
-        print("  Downloading both real granules (parallel)...")
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {
-                "before": pool.submit(wait_for_download, base_url, before_meta["granule_id"], before_meta["download_url"], before_meta.get("size_mb")),
-                "after": pool.submit(wait_for_download, base_url, after_meta["granule_id"], after_meta["download_url"], after_meta.get("size_mb")),
-            }
-            local_paths = {name: f.result() for name, f in futures.items()}
+        # Download sequentially (not in parallel) during pre-seeding: this
+        # script runs unattended for many locations back-to-back, and two
+        # simultaneous multi-GB streaming downloads can starve the single-
+        # process server's event loop under sustained load (confirmed during
+        # the first real batch run: concurrent downloads caused the shared
+        # download-manager thread pool/manifest lock to stall new requests).
+        # The live user-facing app still downloads before/after in parallel
+        # (fine under light single-user load) - this is pre-seed-specific.
+        print("  Downloading real 'before' granule...")
+        before_path = wait_for_download(base_url, before_meta["granule_id"], before_meta["download_url"], before_meta.get("size_mb"))
+        print("  Downloading real 'after' granule...")
+        after_path = wait_for_download(base_url, after_meta["granule_id"], after_meta["download_url"], after_meta.get("size_mb"))
+        local_paths = {"before": before_path, "after": after_path}
 
         polarization = pick_best_polarization(local_paths["before"], local_paths["after"])
         print(f"  Using real polarization channel: {polarization}")
