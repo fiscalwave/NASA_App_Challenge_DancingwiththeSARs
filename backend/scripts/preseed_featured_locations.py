@@ -84,6 +84,7 @@ POLL_INTERVAL_SECONDS = 5
 DOWNLOAD_TIMEOUT_SECONDS = 20 * 60  # large real GCOV files can take a while
 ANALYZE_TIMEOUT_SECONDS = 10 * 60
 IMPACT_TIMEOUT_SECONDS = 6 * 60  # best-effort; Overpass can be flaky
+TIMESERIES_TIMEOUT_SECONDS = 10 * 60  # best-effort; several real remote reads
 
 
 def bbox_from_center(lat: float, lon: float, radius_km: float) -> Tuple[float, float, float, float]:
@@ -213,6 +214,48 @@ def pick_best_polarization(before_path: str, after_path: str) -> str:
     raise RuntimeError(f"No common polarization between before ({before_pols}) and after ({after_pols})")
 
 
+def preseed_timeseries(base_url: str, bbox: Tuple[float, float, float, float], polarization: str) -> Optional[str]:
+    """
+    Best-effort: pre-compute the real multi-date backscatter time series
+    (ASF OpenSARlab NISAR Cookbook sections 7-8) for this location's AOI, so
+    it loads instantly from the frontend just like the before/after result
+    does - rather than the live ~2-4 minute wait a user would otherwise see.
+
+    Never fatal to the overall location pre-seed: returns None (and the
+    location is still marked "ready" for its before/after result) if the
+    real time series can't be built yet (e.g. fewer than 3 real same-
+    geometry acquisitions exist so far for this AOI).
+    """
+    try:
+        body = {
+            "bounds": {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]},
+            "polarization": polarization,
+            "max_acquisitions": 12,
+        }
+        resp = resilient_request("POST", f"{base_url}/api/v2/timeseries", json=body, timeout=90)
+        data = resp.json()
+        if data.get("status") == "processing":
+            analysis_id = data["analysis_id"]
+            deadline = time.time() + TIMESERIES_TIMEOUT_SECONDS
+            while time.time() < deadline:
+                time.sleep(POLL_INTERVAL_SECONDS)
+                status = resilient_request(
+                    "GET", f"{base_url}/api/v2/timeseries/status/{analysis_id}", timeout=60
+                ).json()
+                if status.get("status") != "processing":
+                    data = status
+                    break
+            else:
+                raise TimeoutError("Time series timed out")
+        if data.get("status") != "success":
+            raise RuntimeError(f"Time series failed: {data}")
+        print(f"  Real time series ready: {data['frame_count']} date(s), track {data['track']}/frame {data['frame']}")
+        return data["analysis_id"]
+    except Exception as e:
+        print(f"  Time series unavailable (non-fatal, continuing): {e}")
+        return None
+
+
 def cleanup_raw_granules(granule_ids: List[str]) -> None:
     """Delete raw HDF5 files and their manifest entries for the given
     granule_ids - safe once the small derived analysis result is cached on
@@ -333,6 +376,9 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
         except Exception as e:
             print(f"  Impact computation failed (non-fatal, continuing): {e}")
 
+        print("  Building real multi-date backscatter time series (best-effort)...")
+        timeseries_analysis_id = preseed_timeseries(base_url, bbox, polarization)
+
         cache[loc_id] = {
             "analysis_id": analysis_id,
             "before_granule_id": before_meta["granule_id"],
@@ -341,6 +387,7 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
             "polarization": polarization,
             "before_date": before_meta["time_start"],
             "after_date": after_meta["time_start"],
+            "timeseries_analysis_id": timeseries_analysis_id,
             "last_preseeded_at": datetime.now(timezone.utc).isoformat(),
         }
         save_json(FEATURED_CACHE_PATH, cache)

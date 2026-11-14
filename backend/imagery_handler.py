@@ -366,6 +366,31 @@ def render_real_sar_layer(
     return renderer.to_base64_png(img)
 
 
+def render_timeseries_frame(backscatter_db: np.ndarray, date_label: str) -> Image.Image:
+    """
+    Render one real acquisition's AOI subset as a single time-series
+    animation frame (ASF OpenSARlab NISAR Cookbook section 7, "SAR Time
+    Series Animation") - reuses the same real colorization code as the
+    before/after swipe view, just titled with its real acquisition date
+    instead of "Before"/"After". Downsamples large real frames (same
+    MAX_DISPLAY_DIM cap as the swipe view) so a multi-frame animation/GIF
+    stays a reasonable size - this is a display convenience only, the full-
+    resolution per-date data (means, pixel counts) is computed before this
+    downsampling happens, never from the downsampled frame.
+    """
+    renderer = SARBackscatterRenderer(width=backscatter_db.shape[1], height=backscatter_db.shape[0])
+    img = renderer.render_sar_backscatter(
+        backscatter_db=backscatter_db,
+        title=date_label,
+        colormap="grayscale",
+    )
+    if max(img.size) > MAX_DISPLAY_DIM:
+        scale = MAX_DISPLAY_DIM / max(img.size)
+        new_size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+        img = img.resize(new_size, Image.LANCZOS)
+    return img
+
+
 if __name__ == "__main__":
     # Test visualization
     renderer = SARBackscatterRenderer()

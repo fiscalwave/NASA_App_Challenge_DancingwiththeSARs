@@ -27,6 +27,10 @@ Everything below in this document (`/api/search`, `/api/imagery/comparison`, etc
 | `/api/v2/analyze/{id}/visual/{before\|after}` | GET | Real SAR backscatter rendered as a base64 PNG for the swipe-comparison UI (downsampled for display only; the full-resolution GeoTIFF above is unaffected). |
 | `/api/v2/diagnostics/earthdata-auth` | GET | Safe (never exposes secrets) check of whether real Earthdata credentials are configured and valid. |
 | `/api/v2/diagnostics/external-cache` | GET | Whether the optional free external result cache (Cloudflare R2) is configured. |
+| `/api/v2/timeseries` | POST | Thin handler: starts a real multi-date backscatter time-series analysis (ASF OpenSARlab NISAR Cookbook sections 7-8). Body: `{bounds, polarization, max_acquisitions}`. Does its own real CMR discovery internally (finds every real granule sharing one acquisition geometry for the AOI, capped to the most recent `max_acquisitions`, default 12) - no granule IDs required from the caller. Computed automatically alongside every search in the live UI. |
+| `/api/v2/timeseries/status/{analysis_id}` | GET | Poll until `status` is no longer `"processing"`. On success, returns real `dates`, `means_db`/`means_power` (power-scale-correct spatial means per date), `frames` (per-date animation frame URLs), and `gif_url`. |
+| `/api/v2/timeseries/{id}/frame/{index}` | GET | One real per-date animation frame PNG. |
+| `/api/v2/timeseries/{id}/animation.gif` | GET | The real animated GIF assembled from every per-date frame. |
 
 See `backend/app_real_api.py` for the authoritative, fully-commented implementation of every endpoint above.
 

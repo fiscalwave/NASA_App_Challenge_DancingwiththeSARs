@@ -259,3 +259,72 @@ class CMRAdapter:
             )
 
         return result
+
+    @classmethod
+    def discover_time_series(
+        cls,
+        bounds: Tuple[float, float, float, float],
+        start: date,
+        end: date,
+        max_acquisitions: int = 12,
+        tiers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Discover the real chronological acquisition history for an AOI, for
+        a multi-date backscatter time series (per the ASF OpenSARlab NISAR
+        Cookbook's time-series techniques) - different from
+        discover_pre_post_event(), which only looks at two narrow pre/post
+        windows around a single event date.
+
+        Groups every real granule found in [start, end] by (track, frame,
+        pass_direction) - only acquisitions sharing the same real SAR look
+        geometry are comparable in a time series, for the same reason a
+        before/after pair requires it - and returns the LARGEST such group
+        (the one real repeat-pass geometry with the most actual coverage for
+        this AOI), capped to the most recent max_acquisitions dates in
+        chronological order.
+
+        Returns:
+            {
+                "acquisitions": [...real granule metadata dicts, oldest first...],
+                "track": int or None, "frame": int or None, "pass_direction": str or None,
+                "total_candidates": total real granules found across all geometries,
+                "total_in_group": real granules found for the selected geometry
+                                  (before capping to max_acquisitions),
+            }
+            Empty "acquisitions" list (with track/frame/pass_direction all
+            None) if no real granule in this AOI/window has track/frame
+            metadata at all - never substitutes a fabricated time series.
+        """
+        granules = cls.discover_granules(bounds, start, end, tiers=tiers)
+
+        groups: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = {}
+        for g in granules:
+            if g.get("track") is None:
+                continue
+            key = (g["track"], g["frame"], g["pass_direction"])
+            groups.setdefault(key, []).append(g)
+
+        if not groups:
+            return {
+                "acquisitions": [],
+                "track": None,
+                "frame": None,
+                "pass_direction": None,
+                "total_candidates": len(granules),
+                "total_in_group": 0,
+            }
+
+        best_key, best_group = max(groups.items(), key=lambda kv: len(kv[1]))
+        best_group = sorted(best_group, key=lambda g: g.get("time_start") or "")
+        capped = best_group[-max_acquisitions:] if max_acquisitions else best_group
+
+        return {
+            "acquisitions": capped,
+            "track": best_key[0],
+            "frame": best_key[1],
+            "pass_direction": best_key[2],
+            "total_candidates": len(granules),
+            "total_in_group": len(best_group),
+        }
+

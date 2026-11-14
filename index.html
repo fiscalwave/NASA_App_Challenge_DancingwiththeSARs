@@ -1187,6 +1187,29 @@
             </div>
         </div>
 
+        <!-- PHASE 8: REAL BACKSCATTER TIME SERIES (ASF OpenSARlab NISAR
+             Cookbook sections 7-8: multi-date animation + time series of
+             means) - computed automatically alongside every search. -->
+        <div class="area-estimator-card" id="timeSeriesCard" style="display: none;">
+            <h3>Backscatter Time Series (real, multi-date)</h3>
+
+            <p id="timeSeriesNote" style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 1rem;"></p>
+
+            <div id="timeSeriesContent" style="display: none;">
+                <canvas id="timeSeriesChart" width="760" height="180" style="width: 100%; height: 180px; background: rgba(2, 6, 23, 0.4); border-radius: 0.5rem;"></canvas>
+
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem;">
+                    <button class="export-btn" id="tsPrevBtn" title="Previous date">&#8249;</button>
+                    <button class="export-btn" id="tsPlayBtn" title="Play/pause animation">&#9654;</button>
+                    <button class="export-btn" id="tsNextBtn" title="Next date">&#8250;</button>
+                    <span id="tsFrameLabel" style="color: #cbd5e1; font-size: 0.85rem;"></span>
+                    <a id="tsGifLink" href="#" download style="margin-left: auto; display: none;" class="export-btn">Download GIF</a>
+                </div>
+
+                <img id="tsFrameImage" alt="Backscatter animation frame" style="width: 100%; max-width: 420px; display: block; margin-top: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(51, 65, 85, 0.3);" />
+            </div>
+        </div>
+
         <!-- PHASE 2B: INFRASTRUCTURE LAYERS -->
         <div class="layer-controls" id="layerControlsCard" style="display: none;">
             <h4>Infrastructure Layers</h4>
@@ -1369,6 +1392,15 @@
             // so a slow background operation cannot overwrite this reset later.
             searchGeneration++;
 
+            // Stop any running time-series animation (it belongs to a
+            // search this reset is about to clear away).
+            if (tsAnimationTimer) {
+                clearInterval(tsAnimationTimer);
+                tsAnimationTimer = null;
+            }
+            tsCurrentData = null;
+            tsCurrentIndex = 0;
+
             document.getElementById('locationInput').value = '';
             document.getElementById('radiusInput').value = '10';
             document.getElementById('startDate').value = '2025-01-01';
@@ -1380,6 +1412,7 @@
             // hiding resultsSection alone)
             document.getElementById('swipeViewCard').style.display = 'none';
             document.getElementById('areaEstimatorCard').style.display = 'none';
+            document.getElementById('timeSeriesCard').style.display = 'none';
             document.getElementById('layerControlsCard').style.display = 'none';
             document.getElementById('exportMenuCard').style.display = 'none';
             document.getElementById('confidenceBadge').style.display = 'none';
@@ -1666,6 +1699,12 @@
 
                 await displayRealResults(summary, 'loading');
                 computeRealImpactInBackground(summary, generation);
+                // Use the exact cached bounds (not the live map-derived
+                // bounds, which can differ by floating-point rounding) so
+                // this hits the same real pre-seeded time-series cache
+                // entry instead of triggering a fresh recomputation.
+                const cachedBounds = { west: req.bounds[0], south: req.bounds[1], east: req.bounds[2], north: req.bounds[3] };
+                computeRealTimeSeriesInBackground(cachedBounds, req.polarization, generation);
             } catch (error) {
                 if (generation !== searchGeneration) return;
                 hideGlobalStatus();
@@ -1874,6 +1913,7 @@
             // in separately below, in the background, once it's ready.
             await displayRealResults(summary, 'loading');
             computeRealImpactInBackground(summary, generation);
+            computeRealTimeSeriesInBackground(bounds, polarization, generation);
         }
 
         // Fires the real OpenStreetMap-based infrastructure impact job and
@@ -1904,6 +1944,168 @@
                     }
                 }
             })();
+        }
+
+        // Tracks the currently-running frame-animation timer so it can be
+        // stopped on Reset/a new search (otherwise it would keep stepping
+        // through a now-irrelevant time series in the background).
+        let tsAnimationTimer = null;
+        let tsCurrentIndex = 0;
+        let tsCurrentData = null;
+
+        // Fires the real multi-date NISAR backscatter time-series job
+        // (ASF OpenSARlab NISAR Cookbook sections 7-8) for the same real
+        // AOI as the main search - computed automatically for every
+        // search, not behind a separate button. Runs in the background and
+        // fills in the "Backscatter Time Series" card once ready; never
+        // blocks or delays the main before/after results.
+        function computeRealTimeSeriesInBackground(bounds, polarization, generation) {
+            const card = document.getElementById('timeSeriesCard');
+            const note = document.getElementById('timeSeriesNote');
+            const content = document.getElementById('timeSeriesContent');
+            card.style.display = 'block';
+            content.style.display = 'none';
+            note.textContent = 'Looking for real repeat NISAR acquisitions over this area to build a backscatter time series...';
+
+            const noteStatus = (msg) => {
+                if (generation !== searchGeneration) return;
+                note.textContent = msg;
+            };
+
+            (async () => {
+                try {
+                    const ts = await startAndPollJob(
+                        fetch('/api/v2/timeseries', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north },
+                                polarization,
+                                max_acquisitions: 12
+                            })
+                        }),
+                        'Building real multi-date backscatter time series',
+                        generation,
+                        noteStatus
+                    );
+                    if (generation !== searchGeneration || !ts) return; // superseded
+                    renderTimeSeries(ts, generation);
+                } catch (tsError) {
+                    console.warn('Time series unavailable:', tsError);
+                    if (generation === searchGeneration) {
+                        note.textContent = `Real time series unavailable for this area yet: ${tsError.message}`;
+                        content.style.display = 'none';
+                    }
+                }
+            })();
+        }
+
+        // Renders a real multi-date backscatter time series: a plain-canvas
+        // line chart of mean gamma-naught (dB) over time (power-scale
+        // averaging per the ASF OpenSARlab NISAR Cookbook section 8 - all
+        // computed server-side; this just draws real numbers already
+        // returned), plus a frame slider/play button over the real
+        // per-date animation frames (section 7) and a downloadable GIF.
+        function renderTimeSeries(ts, generation) {
+            if (generation !== searchGeneration) return;
+            const note = document.getElementById('timeSeriesNote');
+            const content = document.getElementById('timeSeriesContent');
+
+            if (!ts.dates || ts.dates.length < 2) {
+                note.textContent = 'Not enough real repeat acquisitions are available for this area yet to build a time series.';
+                content.style.display = 'none';
+                return;
+            }
+
+            tsCurrentData = ts;
+            tsCurrentIndex = ts.frame_count > 0 ? ts.frame_count - 1 : 0;
+            if (tsAnimationTimer) {
+                clearInterval(tsAnimationTimer);
+                tsAnimationTimer = null;
+                document.getElementById('tsPlayBtn').textContent = '\u25B6';
+            }
+
+            note.textContent = `Real track ${ts.track}/frame ${ts.frame} (${ts.pass_direction}): ` +
+                `${ts.dates.length} of ${ts.total_in_group} real acquisition(s) found since this AOI's coverage began.`;
+            content.style.display = 'block';
+
+            drawTimeSeriesChart(ts);
+
+            if (ts.gif_url) {
+                const gifLink = document.getElementById('tsGifLink');
+                gifLink.href = ts.gif_url;
+                gifLink.style.display = 'inline-block';
+            } else {
+                document.getElementById('tsGifLink').style.display = 'none';
+            }
+
+            updateTimeSeriesFrame();
+        }
+
+        function drawTimeSeriesChart(ts) {
+            const canvas = document.getElementById('timeSeriesChart');
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width, h = canvas.height;
+            const padding = { left: 50, right: 15, top: 15, bottom: 25 };
+            ctx.clearRect(0, 0, w, h);
+
+            const values = ts.means_db;
+            const minV = Math.min(...values) - 0.5;
+            const maxV = Math.max(...values) + 0.5;
+            const plotW = w - padding.left - padding.right;
+            const plotH = h - padding.top - padding.bottom;
+
+            const xFor = (i) => padding.left + (values.length > 1 ? (i / (values.length - 1)) * plotW : plotW / 2);
+            const yFor = (v) => padding.top + plotH - ((v - minV) / (maxV - minV || 1)) * plotH;
+
+            // Axis lines
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, padding.top);
+            ctx.lineTo(padding.left, padding.top + plotH);
+            ctx.lineTo(padding.left + plotW, padding.top + plotH);
+            ctx.stroke();
+
+            // Y-axis labels (min/max dB)
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(`${maxV.toFixed(1)} dB`, 2, padding.top + 8);
+            ctx.fillText(`${minV.toFixed(1)} dB`, 2, padding.top + plotH);
+
+            // Real mean-backscatter line
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            values.forEach((v, i) => {
+                const x = xFor(i), y = yFor(v);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Real data points
+            ctx.fillStyle = '#38bdf8';
+            values.forEach((v, i) => {
+                ctx.beginPath();
+                ctx.arc(xFor(i), yFor(v), 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Date labels (first/last only, to avoid crowding)
+            ctx.fillStyle = '#cbd5e1';
+            ctx.font = '10px sans-serif';
+            ctx.fillText((ts.dates[0] || '').slice(0, 10), xFor(0) - 15, h - 6);
+            ctx.fillText((ts.dates[ts.dates.length - 1] || '').slice(0, 10), xFor(values.length - 1) - 35, h - 6);
+        }
+
+        function updateTimeSeriesFrame() {
+            const ts = tsCurrentData;
+            if (!ts || ts.frame_count === 0) return;
+            const img = document.getElementById('tsFrameImage');
+            const label = document.getElementById('tsFrameLabel');
+            img.src = ts.frames[tsCurrentIndex];
+            const dateStr = (ts.dates[tsCurrentIndex] || '').slice(0, 10);
+            label.textContent = `${dateStr} (${tsCurrentIndex + 1}/${ts.frame_count}) - mean ${ts.means_db[tsCurrentIndex].toFixed(2)} dB`;
         }
 
         function getMapBounds() {
@@ -2571,6 +2773,33 @@ ${placemarks}
                 toggle.addEventListener('change', (e) => {
                     toggleInfrastructureLayer(e.target);
                 });
+            });
+
+            // Phase 8: Add event listeners for the real backscatter
+            // time-series frame controls (prev/next/play-pause)
+            document.getElementById('tsPrevBtn').addEventListener('click', () => {
+                if (!tsCurrentData || tsCurrentData.frame_count === 0) return;
+                tsCurrentIndex = (tsCurrentIndex - 1 + tsCurrentData.frame_count) % tsCurrentData.frame_count;
+                updateTimeSeriesFrame();
+            });
+            document.getElementById('tsNextBtn').addEventListener('click', () => {
+                if (!tsCurrentData || tsCurrentData.frame_count === 0) return;
+                tsCurrentIndex = (tsCurrentIndex + 1) % tsCurrentData.frame_count;
+                updateTimeSeriesFrame();
+            });
+            document.getElementById('tsPlayBtn').addEventListener('click', (e) => {
+                if (!tsCurrentData || tsCurrentData.frame_count === 0) return;
+                if (tsAnimationTimer) {
+                    clearInterval(tsAnimationTimer);
+                    tsAnimationTimer = null;
+                    e.target.textContent = '\u25B6';
+                    return;
+                }
+                e.target.textContent = '\u23F8';
+                tsAnimationTimer = setInterval(() => {
+                    tsCurrentIndex = (tsCurrentIndex + 1) % tsCurrentData.frame_count;
+                    updateTimeSeriesFrame();
+                }, 800);
             });
         });
     </script>

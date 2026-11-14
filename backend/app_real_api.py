@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, date
 import os
 import sys
 import hashlib
@@ -25,10 +25,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Import imagery handler (real-data GeoTIFF-to-PNG rendering only - the
 # previous synthetic/fabricated visualization path has been removed)
 try:
-    from imagery_handler import render_real_sar_layer
+    from imagery_handler import render_real_sar_layer, render_timeseries_frame
 except ImportError as e:
     print(f"Warning: Could not import imagery_handler: {e}")
     render_real_sar_layer = None
+    render_timeseries_frame = None
 
 # Import Phase 4 real-data discovery/download pipeline (dormant app/ package,
 # now wired into the live API additively - does not replace /api/search)
@@ -170,6 +171,21 @@ GCOV_ANALYSIS_CACHE_DIR = Path(__file__).parent / "data" / "analysis_cache"
 GCOV_ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================================
+# PHASE 8: REAL MULTI-DATE BACKSCATTER TIME SERIES (ASF OpenSARlab NISAR
+# Cookbook sections 7-8: time-series animation + time series of means,
+# additive, /api/v2/timeseries*)
+# ============================================================================
+
+GCOV_TIMESERIES_CACHE_DIR = Path(__file__).parent / "data" / "timeseries_cache"
+GCOV_TIMESERIES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Real NISAR L2 GCOV science-quality data collection start, used as the
+# earliest date to search for a real time series (same value the pre-seed
+# script uses) - not a hardcoded mission launch date, just the start of the
+# real archive this app searches.
+NISAR_MISSION_START = date(2025, 8, 1)
+
+# ============================================================================
 # TIER 1 SPEED: PRE-SEEDED "FEATURED LOCATIONS" (instant real-data demo cache)
 # ============================================================================
 # featured_locations.json is the static, version-controlled curated list of
@@ -209,6 +225,7 @@ _background_executor = ThreadPoolExecutor(max_workers=2)
 _job_lock = threading.Lock()
 _analysis_jobs: Dict[str, Dict[str, Any]] = {}  # analysis_id -> {"status": "processing"|"failed", "error": str}
 _impact_jobs: Dict[str, Dict[str, Any]] = {}    # analysis_id -> {"status": "processing"|"failed", "error": str}
+_timeseries_jobs: Dict[str, Dict[str, Any]] = {}  # analysis_id -> {"status": "processing"|"failed", "error": str}
 
 download_manager = None
 if DownloadManager is not None:
@@ -342,6 +359,22 @@ class AnalyzeRequest(BaseModel):
     polarization: str = "HHHH"
     flood_change_threshold_db: float = -2.0
     low_backscatter_threshold_db: float = -15.0
+
+
+class TimeSeriesRequest(BaseModel):
+    """Real multi-date backscatter time-series request for one AOI (ASF
+    OpenSARlab NISAR Cookbook sections 7-8: time-series animation + time
+    series of means).
+
+    Unlike /api/v2/analyze (exactly two granules a caller already picked),
+    this endpoint does its own real CMR discovery internally: it finds every
+    real granule covering this AOI that shares the same acquisition geometry
+    (track/frame/pass direction - required for a scientifically meaningful
+    time series, for the same reason a before/after pair needs it), and uses
+    the most recent max_acquisitions of them, oldest first."""
+    bounds: BoundsModel
+    polarization: str = "HHHH"
+    max_acquisitions: int = 12
 
 
 # ============================================================================
@@ -830,6 +863,10 @@ async def list_featured_locations():
             entry["before_date"] = cached.get("before_date")
             entry["after_date"] = cached.get("after_date")
             entry["last_preseeded_at"] = cached.get("last_preseeded_at")
+            # Present only if the pre-seed script successfully built a real
+            # time series for this AOI (best-effort - may be absent for a
+            # location with too few real repeat acquisitions so far).
+            entry["timeseries_analysis_id"] = cached.get("timeseries_analysis_id")
         else:
             entry["ready"] = False
         results.append(entry)
@@ -1567,6 +1604,243 @@ async def get_impact_status(analysis_id: str):
         return result
 
     return {"status": "processing", "analysis_id": analysis_id}
+
+
+# ============================================================================
+# PHASE 8: REAL MULTI-DATE BACKSCATTER TIME SERIES (ASF OpenSARlab NISAR
+# Cookbook sections 7-8, /api/v2/timeseries*)
+# ============================================================================
+
+def _timeseries_id_for(request: "TimeSeriesRequest") -> str:
+    seed = (
+        f"timeseries|{request.bounds.west}|{request.bounds.south}|"
+        f"{request.bounds.east}|{request.bounds.north}|"
+        f"{request.polarization}|{request.max_acquisitions}"
+    )
+    return hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+
+def _run_timeseries_analysis(analysis_id: str, request: "TimeSeriesRequest", result_dir: Path, summary_path: Path) -> None:
+    """
+    The actual real multi-date backscatter time-series work (runs in a
+    background thread - real processing across ~8-12 real acquisitions can
+    take a few minutes). Discovers every real granule sharing one real
+    acquisition geometry for this AOI (CMRAdapter.discover_time_series),
+    reads each one's real AOI subset (remote-read-first, same
+    _get_gcov_data() helper /api/v2/analyze uses), computes the real
+    per-date mean backscatter correctly in power scale before converting to
+    dB (ASF OpenSARlab NISAR Cookbook section 8 - "Calculate the Time Series
+    of Means"), renders a real per-date animation frame (section 7), and
+    assembles a real animated GIF. Never fabricates a date, acquisition, or
+    statistic that wasn't actually read from a real granule - any real
+    acquisition that fails to read or has no valid pixels in this AOI is
+    skipped (logged), not papered over with an invented value.
+    """
+    try:
+        if CMRAdapter is None:
+            raise ProcessingError("Discovery pipeline not available")
+
+        bounds_tuple = (request.bounds.west, request.bounds.south, request.bounds.east, request.bounds.north)
+        today = datetime.now().date()
+        ts_info = CMRAdapter.discover_time_series(
+            bounds_tuple, NISAR_MISSION_START, today, max_acquisitions=request.max_acquisitions
+        )
+        acquisitions = ts_info["acquisitions"]
+
+        if len(acquisitions) < 3:
+            raise ValidationError(
+                f"Only {len(acquisitions)} real same-geometry acquisition(s) are available for this "
+                f"area so far - at least 3 are needed for a meaningful time series. NISAR revisits this "
+                f"area roughly every 12 days, so more will become available over time."
+            )
+
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+        dates: List[str] = []
+        means_db: List[float] = []
+        means_power: List[float] = []
+        granule_ids: List[str] = []
+        pil_frames = []
+
+        for g in acquisitions:
+            try:
+                data = _get_gcov_data(g["granule_id"], g.get("download_url"), request.polarization, bounds_tuple)
+            except Exception as e:
+                # A single real granule failing to read (no overlap with
+                # this exact AOI, a transient network error, etc.) must not
+                # sink the whole real time series - skip it and keep going.
+                print(f"Skipping real acquisition {g['granule_id']} in time series {analysis_id}: {e}")
+                continue
+
+            mean_db = GCOVReader.mean_backscatter_db(data["data"])
+            if mean_db is None:
+                print(
+                    f"Skipping real acquisition {g['granule_id']} in time series {analysis_id}: "
+                    f"no valid pixels in this AOI"
+                )
+                continue
+
+            date_label = (g.get("time_start") or "")[:10] or g["granule_id"]
+            dates.append(g.get("time_start"))
+            means_db.append(mean_db)
+            means_power.append(10.0 ** (mean_db / 10.0))
+            granule_ids.append(g["granule_id"])
+
+            if render_timeseries_frame is not None:
+                frame_img = render_timeseries_frame(data["data"], date_label)
+                frame_img.save(result_dir / f"frame_{len(pil_frames)}.png")
+                pil_frames.append(frame_img)
+
+        if len(dates) < 2:
+            raise ValidationError(
+                "Not enough real acquisitions had valid overlapping data for this AOI to build a time series."
+            )
+
+        gif_url = None
+        if len(pil_frames) >= 2:
+            gif_path = result_dir / "animation.gif"
+            # 800ms/frame - slow enough to actually see each real date change
+            pil_frames[0].save(gif_path, save_all=True, append_images=pil_frames[1:], duration=800, loop=0)
+            gif_url = f"/api/v2/timeseries/{analysis_id}/animation.gif"
+
+        summary = {
+            "status": "success",
+            "analysis_id": analysis_id,
+            "track": ts_info["track"],
+            "frame": ts_info["frame"],
+            "pass_direction": ts_info["pass_direction"],
+            "polarization": request.polarization,
+            "bounds": list(bounds_tuple),
+            "total_candidates": ts_info["total_candidates"],
+            "total_in_group": ts_info["total_in_group"],
+            "dates": dates,
+            "granule_ids": granule_ids,
+            "means_db": means_db,
+            "means_power": means_power,
+            "frame_count": len(pil_frames),
+            "frames": [f"/api/v2/timeseries/{analysis_id}/frame/{i}" for i in range(len(pil_frames))],
+            "gif_url": gif_url,
+        }
+
+        with open(summary_path, "w") as f:
+            json.dump(summary, f)
+
+        # Best-effort: persist to the free external cache so a Render
+        # restart doesn't lose a result that took minutes of real remote
+        # reads to compute (reuses the same analysis-result cache helpers -
+        # they operate generically on any analysis_id/result_dir).
+        if upload_analysis_result:
+            upload_analysis_result(analysis_id, result_dir)
+
+        with _job_lock:
+            _timeseries_jobs[analysis_id] = {"status": "success"}
+
+    except (ProcessingError, ValidationError) as e:
+        with _job_lock:
+            _timeseries_jobs[analysis_id] = {"status": "failed", "error": str(e)}
+    except HTTPException as e:
+        with _job_lock:
+            _timeseries_jobs[analysis_id] = {"status": "failed", "error": str(e.detail)}
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"UNEXPECTED ERROR in _run_timeseries_analysis: {e}\n{tb}")
+        with _job_lock:
+            _timeseries_jobs[analysis_id] = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/v2/timeseries", tags=["Time Series v8"])
+async def start_timeseries(request: TimeSeriesRequest):
+    """
+    Start a real multi-date backscatter time-series analysis for an AOI.
+
+    Thin handler (same background-job/polling pattern as /api/v2/analyze):
+    real processing across several real acquisitions can take a few
+    minutes, so this returns immediately with {"status": "processing", ...}
+    (or the full cached result if this exact AOI/polarization/cap was
+    already computed). Poll GET /api/v2/timeseries/status/{analysis_id}.
+    """
+    if CMRAdapter is None or GCOVReader is None:
+        raise HTTPException(status_code=503, detail="Time series pipeline not available")
+
+    analysis_id = _timeseries_id_for(request)
+    result_dir = GCOV_TIMESERIES_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+
+    if summary_path.exists():
+        cached = _load_json_safe(summary_path)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
+
+    if download_analysis_result and download_analysis_result(analysis_id, result_dir):
+        cached = _load_json_safe(summary_path)
+        if cached is not None:
+            cached["cached"] = True
+            cached["cache_source"] = "external"
+            return cached
+
+    with _job_lock:
+        existing = _timeseries_jobs.get(analysis_id)
+        if existing and existing.get("status") == "processing":
+            return {"status": "processing", "analysis_id": analysis_id,
+                    "message": "Real time-series analysis already in progress for this request."}
+        _timeseries_jobs[analysis_id] = {"status": "processing"}
+
+    _background_executor.submit(_run_timeseries_analysis, analysis_id, request, result_dir, summary_path)
+
+    return {
+        "status": "processing",
+        "analysis_id": analysis_id,
+        "message": "Real NISAR backscatter time-series analysis started in the background.",
+        "status_url": f"/api/v2/timeseries/status/{analysis_id}",
+    }
+
+
+@app.get("/api/v2/timeseries/status/{analysis_id}", tags=["Time Series v8"])
+async def get_timeseries_status(analysis_id: str):
+    """Poll the status of a real time-series analysis started via POST /api/v2/timeseries."""
+    result_dir = GCOV_TIMESERIES_CACHE_DIR / analysis_id
+    summary_path = result_dir / "summary.json"
+
+    if summary_path.exists():
+        cached = _load_json_safe(summary_path)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
+
+    with _job_lock:
+        job = _timeseries_jobs.get(analysis_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="No time-series analysis found or in progress for this analysis_id")
+
+    if job.get("status") == "failed":
+        raise HTTPException(status_code=500, detail=job.get("error", "Time-series analysis failed"))
+
+    return {"status": "processing", "analysis_id": analysis_id}
+
+
+@app.get("/api/v2/timeseries/{analysis_id}/frame/{index}", tags=["Time Series v8"])
+async def get_timeseries_frame(analysis_id: str, index: int):
+    """Download one real per-date animation frame PNG from a completed time-series analysis."""
+    file_path = GCOV_TIMESERIES_CACHE_DIR / analysis_id / f"frame_{index}.png"
+    if not file_path.exists() and download_single_file:
+        download_single_file(analysis_id, f"frame_{index}.png", file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Time-series frame not found")
+    return FileResponse(file_path, media_type="image/png")
+
+
+@app.get("/api/v2/timeseries/{analysis_id}/animation.gif", tags=["Time Series v8"])
+async def get_timeseries_gif(analysis_id: str):
+    """Download the real animated GIF (all real per-date frames) from a completed time-series analysis."""
+    file_path = GCOV_TIMESERIES_CACHE_DIR / analysis_id / "animation.gif"
+    if not file_path.exists() and download_single_file:
+        download_single_file(analysis_id, "animation.gif", file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Time-series animation not found")
+    return FileResponse(file_path, media_type="image/gif")
 
 
 if __name__ == "__main__":

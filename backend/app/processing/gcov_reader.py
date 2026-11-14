@@ -7,7 +7,7 @@ refactored for use in the FastAPI backend.
 """
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import numpy as np
 import h5py
 from pyproj import Transformer
@@ -104,6 +104,38 @@ class GCOVReader:
     def _scalar(value: object) -> int:
         """Convert numpy scalar to Python int."""
         return int(np.asarray(value).item())
+
+    @staticmethod
+    def mean_backscatter_db(backscatter_db: np.ndarray) -> Optional[float]:
+        """
+        Real spatial mean backscatter for one acquisition's AOI subset, for
+        a multi-date time series (ASF OpenSARlab NISAR Cookbook, "Calculate
+        the Time Series of Means"). Averaging must be done in POWER scale,
+        not dB/log scale - the cookbook is explicit about this: "we cannot
+        simply average data in log scale" - so this converts dB -> power,
+        takes the real mean over all valid pixels, then converts the single
+        resulting mean back to dB for display/plotting, matching the
+        cookbook's documented 8b/8c steps exactly.
+
+        Args:
+            backscatter_db: 2D array of backscatter in dB (as returned by
+                load_gcov_subset()/load_gcov_subset_remote() - NaN-filled at
+                invalid/fill-value pixels)
+
+        Returns:
+            Real mean backscatter in dB, or None if there are no valid
+            (finite, positive-power) pixels in this subset - never a
+            fabricated placeholder value.
+        """
+        power = np.power(10.0, backscatter_db.astype(np.float64) / 10.0)
+        valid = np.isfinite(power) & (power > 0)
+        if not np.any(valid):
+            return None
+        mean_power = float(np.mean(power[valid]))
+        if mean_power <= 0:
+            return None
+        return 10.0 * float(np.log10(mean_power))
+
 
     @classmethod
     def load_gcov_subset(
