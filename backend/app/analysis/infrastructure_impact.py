@@ -208,10 +208,18 @@ def query_infrastructure_category(category: str, bbox: Tuple[float, float, float
     if category not in INFRA_QUERIES:
         raise ValueError(f"Unknown infrastructure category '{category}'. Valid: {sorted(INFRA_QUERIES)}")
 
+    has_fallback = category in GEOAPIFY_CATEGORIES and bool(_geoapify_api_key())
+    # When a real fallback exists for this category, don't make the caller
+    # wait through Overpass's full 3-mirror x 25s timeout budget (75s) before
+    # getting a real answer from Geoapify - fail faster over to the
+    # fallback instead. "roads" has no fallback, so it keeps the full
+    # timeout budget since Overpass is the only real option for it.
+    overpass_timeout = 10 if has_fallback else 25
+
     try:
-        return _query_overpass(INFRA_QUERIES[category]["ql"], bbox)
+        return _query_overpass(INFRA_QUERIES[category]["ql"], bbox, timeout=overpass_timeout)
     except DataIngestionError as overpass_error:
-        if category not in GEOAPIFY_CATEGORIES or not _geoapify_api_key():
+        if not has_fallback:
             raise
         logger.warning(
             f"Overpass failed for category '{category}' ({overpass_error}); trying real Geoapify fallback"
