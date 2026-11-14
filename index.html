@@ -906,10 +906,10 @@
                 <div class="form-group">
                     <label for="radiusInput">Search Radius (km)</label>
                     <div class="form-input">
-                        <input type="number" id="radiusInput" value="10" min="5" max="100" />
+                        <input type="number" id="radiusInput" value="10" min="5" max="150" />
                     </div>
                     <small style="color: #94a3b8; font-size: 0.78rem; display: block; margin-top: 0.3rem;">
-                        Keep under ~38 km: larger areas exceed the real-data processing memory limit on this deployment.
+                        Keep under ~150 km: larger areas exceed the real-data processing memory limit on this deployment.
                     </small>
                 </div>
 
@@ -1398,13 +1398,12 @@
             const locationText = location;
 
             // Pre-flight check: GCOVReader enforces a hard real-data processing
-            // limit (MAX_SUBSET_PIXELS = 15,000,000, backend/app/processing/
-            // gcov_reader.py) to avoid out-of-memory failures on constrained
-            // hosts (Render's free tier has ~512MB RAM). Checking this BEFORE
-            // starting a real multi-GB download avoids wasting bandwidth/time
-            // on a search that would fail only after the download completes.
+            // limit (MAX_SUBSET_PIXELS, backend/app/processing/gcov_reader.py)
+            // to avoid out-of-memory failures. Checking this BEFORE starting a
+            // real multi-GB download avoids wasting bandwidth/time on a search
+            // that would fail only after the download completes.
             const PIXEL_SPACING_M = 20; // real NISAR GCOV pixel spacing
-            const MAX_SUBSET_PIXELS = 15000000;
+            const MAX_SUBSET_PIXELS = 225000000; // sized for a real VM with 16GB RAM
             const latRad = (bounds.north + bounds.south) / 2 * Math.PI / 180;
             const widthM = (bounds.east - bounds.west) * 111320 * Math.cos(latRad);
             const heightM = (bounds.north - bounds.south) * 111320;

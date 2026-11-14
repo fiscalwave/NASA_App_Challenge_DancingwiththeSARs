@@ -22,7 +22,12 @@ class GCOVReader:
     """Reader for NISAR GCOV HDF5 files."""
     
     SUPPORTED_POLARIZATIONS = ("HHHH", "HVHV", "VVVV", "HHHV", "VHVH", "VVVH")
-    MAX_SUBSET_PIXELS = 15_000_000
+    # Raised from the original 15,000,000 (sized for Render free tier's
+    # ~512MB RAM) to 225,000,000 (~150km AOI radius at 20m pixel spacing)
+    # now that the app runs on a real VM with 16GB RAM. Still bounded - not
+    # removed entirely - to protect against a pathological near-global bbox
+    # request exhausting memory.
+    MAX_SUBSET_PIXELS = 225_000_000
 
     @staticmethod
     def find_frequency_group(h5_file: h5py.File) -> h5py.Group:
