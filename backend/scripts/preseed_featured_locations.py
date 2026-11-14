@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -70,6 +71,14 @@ POLARIZATION_PREFERENCE = ["HHHH", "VVVV", "HVHV", "VHVH", "HHHV", "VVVH"]
 # harmless (CMR just returns nothing for dates with no data) and avoids
 # missing any early-released product.
 MISSION_START = date(2025, 8, 1)
+
+# Real NISAR GCOV granules are 1-7GB each. A download abandoned mid-flight
+# by this script (e.g. after exhausting its retry budget) keeps running on
+# the server in the background with no cancellation mechanism, so repeated
+# abandoned downloads can silently accumulate disk usage across an
+# unattended multi-hour run. Refuse to start a new location below this
+# threshold rather than risk filling the disk and taking down the live app.
+MIN_FREE_DISK_GB = 15
 
 POLL_INTERVAL_SECONDS = 5
 DOWNLOAD_TIMEOUT_SECONDS = 20 * 60  # large real GCOV files can take a while
@@ -374,6 +383,14 @@ def main() -> None:
             print(f"Skipping {location['name']} ({location['id']}) - already cached (use --force-refresh to redo)")
             skipped += 1
             continue
+
+        free_gb = shutil.disk_usage(GCOV_CACHE_DIR if GCOV_CACHE_DIR.exists() else BACKEND_DIR).free / 1e9
+        if free_gb < MIN_FREE_DISK_GB:
+            print(f"\nABORTING: only {free_gb:.1f}GB free disk (< {MIN_FREE_DISK_GB}GB threshold) - "
+                  f"refusing to start a new multi-GB download. Free up disk space and re-run "
+                  f"(already-cached locations will be skipped automatically).")
+            break
+
         ok = preseed_location(args.base_url, location, cache)
         if ok:
             succeeded += 1
