@@ -1445,36 +1445,61 @@
             // table, which gets replaced once real results are populated.
         }
 
-        // Poll a real, byte-accurate download until it completes, surfacing
-        // real progress (never a fabricated/simulated progress bar). Stops
-        // silently if a newer search/reset has superseded this one.
-        async function downloadGranuleAndWait(meta, label, generation) {
-            const startResp = await fetch('/api/v2/download/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    granule_id: meta.granule_id,
-                    download_url: meta.download_url,
-                    expected_size_mb: meta.size_mb
-                })
-            });
-            let status = await startResp.json();
-            if (!startResp.ok) {
-                throw new Error(status.detail || `Could not start download for ${meta.granule_id}`);
-            }
-
-            while (status.status !== 'complete') {
-                if (generation !== searchGeneration) return; // superseded
-                if (status.status === 'error' || status.status === 'failed') {
-                    throw new Error(`Download failed for ${meta.granule_id}: ${status.error || 'unknown error'}`);
+        // Start both before/after downloads in parallel (the backend's
+        // DownloadManager already supports 2 concurrent downloads via its
+        // thread pool - there's no reason to wait for one before starting
+        // the other). Polls real, byte-accurate combined progress - never a
+        // fabricated/simulated progress bar. Stops silently if a newer
+        // search/reset has superseded this one.
+        async function downloadGranulesInParallel(beforeMeta, afterMeta, generation) {
+            const starts = await Promise.all([beforeMeta, afterMeta].map(async (meta) => {
+                const resp = await fetch('/api/v2/download/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        granule_id: meta.granule_id,
+                        download_url: meta.download_url,
+                        expected_size_mb: meta.size_mb
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    throw new Error(data.detail || `Could not start download for ${meta.granule_id}`);
                 }
-                const downloadedMb = (status.downloaded_bytes || 0) / 1e6;
-                const totalMb = (status.total_bytes || meta.size_mb * 1e6) / 1e6;
-                const pct = totalMb > 0 ? Math.round(100 * downloadedMb / totalMb) : 0;
-                showGlobalStatus(`${label}: ${pct}% (${downloadedMb.toFixed(0)} / ${totalMb.toFixed(0)} MB) - real NASA Earthdata download in progress...`);
+                return { meta, status: data };
+            }));
+
+            let elapsedSeconds = 0;
+            while (true) {
+                if (generation !== searchGeneration) return; // superseded
+
+                for (const s of starts) {
+                    if (s.status.status === 'error' || s.status.status === 'failed') {
+                        throw new Error(`Download failed for ${s.meta.granule_id}: ${s.status.error || 'unknown error'}`);
+                    }
+                }
+                if (starts.every(s => s.status.status === 'complete')) return;
+
+                const progressParts = starts.map(s => {
+                    if (s.status.status === 'complete') return 'done';
+                    const downloadedMb = (s.status.downloaded_bytes || 0) / 1e6;
+                    const totalMb = (s.status.total_bytes || s.meta.size_mb * 1e6) / 1e6;
+                    const pct = totalMb > 0 ? Math.round(100 * downloadedMb / totalMb) : 0;
+                    return `${pct}%`;
+                });
+                showGlobalStatus(
+                    `Downloading real before/after granules in parallel: before ${progressParts[0]}, after ${progressParts[1]} ` +
+                    `(${elapsedSeconds}s elapsed) - real NASA Earthdata download in progress...`
+                );
+
                 await new Promise(resolve => setTimeout(resolve, 2000));
-                const statusResp = await fetch(`/api/v2/download/status/${encodeURIComponent(meta.granule_id)}`);
-                status = await statusResp.json();
+                elapsedSeconds += 2;
+
+                await Promise.all(starts.map(async (s) => {
+                    if (s.status.status === 'complete') return;
+                    const resp = await fetch(`/api/v2/download/status/${encodeURIComponent(s.meta.granule_id)}`);
+                    s.status = await resp.json();
+                }));
             }
         }
 
@@ -1487,7 +1512,7 @@
         // The backend returns {"status": "processing", "status_url": ...}
         // immediately; this polls that status_url every 2s until it returns
         // the final result (or throws via an HTTP error).
-        async function startAndPollJob(startFetchPromise, label, generation) {
+        async function startAndPollJob(startFetchPromise, label, generation, onStatus = showGlobalStatus) {
             const startResp = await startFetchPromise;
             let data = await startResp.json();
             if (!startResp.ok) {
@@ -1504,7 +1529,7 @@
                 if (generation !== searchGeneration) return null; // superseded
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 elapsedSeconds += 2;
-                showGlobalStatus(`${label}... (${elapsedSeconds}s elapsed)`);
+                onStatus(`${label}... (${elapsedSeconds}s elapsed)`);
 
                 let statusResp, statusData;
                 try {
@@ -1576,9 +1601,7 @@
                 throw new Error('Internal error: could not resolve compatible pair granule metadata');
             }
 
-            await downloadGranuleAndWait(beforeMeta, 'Downloading real "before" granule', generation);
-            if (generation !== searchGeneration) return;
-            await downloadGranuleAndWait(afterMeta, 'Downloading real "after" granule', generation);
+            await downloadGranulesInParallel(beforeMeta, afterMeta, generation);
             if (generation !== searchGeneration) return;
 
             showGlobalStatus('Running real NISAR backscatter change detection...');
@@ -1598,28 +1621,51 @@
             );
             if (generation !== searchGeneration || !summary) return;
 
-            showGlobalStatus('Computing real infrastructure impact from OpenStreetMap (this can take up to ~90 seconds)...');
-            let impact = null;
-            try {
-                impact = await startAndPollJob(
-                    fetch(`/api/v2/analyze/${summary.analysis_id}/impact`, { method: 'POST' }),
-                    'Computing real infrastructure impact from OpenStreetMap',
-                    generation
-                );
-            } catch (impactError) {
-                console.warn('Infrastructure impact unavailable:', impactError);
-            }
-            if (generation !== searchGeneration) return; // superseded - do not render stale results
-
             currentSearchContext.analysisId = summary.analysis_id;
             currentSearchContext.confidence = summary.detection_confidence ? summary.detection_confidence.confidence : null;
 
             // Restore the acquisitions table to show the real discovered
             // granules (it was temporarily showing status messages during
-            // download/analysis/impact computation)
+            // download/analysis computation)
             populateAcquisitionsTable(allGranules);
 
-            await displayRealResults(summary, impact);
+            // Show the real, final flood-detection results NOW - don't make
+            // the user wait on infrastructure impact, which depends on an
+            // external OpenStreetMap/Overpass query that can take up to
+            // ~90s and is sometimes flaky. The impact/priority card fills
+            // in separately below, in the background, once it's ready.
+            await displayRealResults(summary, 'loading');
+            computeRealImpactInBackground(summary, generation);
+        }
+
+        // Fires the real OpenStreetMap-based infrastructure impact job and
+        // updates only the affected-area card when it resolves - runs
+        // without blocking the rest of the UI, and uses the note text (not
+        // the global/acquisitions-table status) for progress so it never
+        // clobbers the already-displayed real results.
+        function computeRealImpactInBackground(summary, generation) {
+            const noteStatus = (msg) => {
+                if (generation !== searchGeneration) return;
+                const note = document.getElementById('areaEstimatorNote');
+                if (note) note.textContent = msg;
+            };
+            (async () => {
+                try {
+                    const impact = await startAndPollJob(
+                        fetch(`/api/v2/analyze/${summary.analysis_id}/impact`, { method: 'POST' }),
+                        'Computing real infrastructure impact from OpenStreetMap',
+                        generation,
+                        noteStatus
+                    );
+                    if (generation !== searchGeneration) return; // superseded
+                    renderRealAffectedArea(summary, impact);
+                } catch (impactError) {
+                    console.warn('Infrastructure impact unavailable:', impactError);
+                    if (generation === searchGeneration) {
+                        renderRealAffectedArea(summary, null);
+                    }
+                }
+            })();
         }
 
         function getMapBounds() {
@@ -1836,26 +1882,29 @@
             document.getElementById('damageLowValue').textContent = 'N/A';
             document.getElementById('damageHighValue').textContent = 'N/A';
 
-            const priority = impact && impact.priority;
-            document.getElementById('priorityValue').textContent = priority ? priority.level : 'Unavailable';
+            const loading = impact === 'loading';
+            const priority = (!loading && impact) ? impact.priority : null;
+            document.getElementById('priorityValue').textContent = loading ? 'Computing...' : (priority ? priority.level : 'Unavailable');
 
-            const categories = (impact && impact.infrastructure_impact && impact.infrastructure_impact.categories) || {};
+            const categories = (!loading && impact && impact.infrastructure_impact && impact.infrastructure_impact.categories) || {};
             const hospitals = categories.hospitals;
             const settlements = categories.settlements;
             const roads = categories.roads;
 
             document.getElementById('hospitalsCount').textContent =
-                (hospitals && hospitals.status === 'ok') ? hospitals.within_flood_count : 'N/A';
+                loading ? '...' : ((hospitals && hospitals.status === 'ok') ? hospitals.within_flood_count : 'N/A');
             document.getElementById('settlementsCount').textContent =
-                (settlements && settlements.status === 'ok') ? settlements.within_flood_count : 'N/A';
+                loading ? '...' : ((settlements && settlements.status === 'ok') ? settlements.within_flood_count : 'N/A');
             document.getElementById('roadsValue').textContent =
-                (roads && roads.status === 'ok') ? roads.intersecting_length_km.toFixed(2) : 'N/A';
+                loading ? '...' : ((roads && roads.status === 'ok') ? roads.intersecting_length_km.toFixed(2) : 'N/A');
 
             const note = document.getElementById('areaEstimatorNote');
             if (note) {
-                note.textContent = 'Population and damage are not estimated: no gridded population/damage dataset is ' +
-                    'integrated. Infrastructure counts reflect live OpenStreetMap data within the detected flood polygon; ' +
-                    '"N/A" means OpenStreetMap did not return data for this category (e.g. mirrors temporarily unavailable).';
+                note.textContent = loading
+                    ? 'The flood detection results above are final. Real infrastructure impact (hospitals/settlements/roads, from live OpenStreetMap data) is being computed in the background and will appear here shortly.'
+                    : 'Population and damage are not estimated: no gridded population/damage dataset is ' +
+                      'integrated. Infrastructure counts reflect live OpenStreetMap data within the detected flood polygon; ' +
+                      '"N/A" means OpenStreetMap did not return data for this category (e.g. mirrors temporarily unavailable).';
             }
 
             document.getElementById('areaEstimatorCard').style.display = 'block';
