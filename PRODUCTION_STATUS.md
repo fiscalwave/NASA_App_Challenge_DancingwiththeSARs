@@ -1,27 +1,31 @@
 # Production Status Report
 
-**VAMIKA (NISAR Flood & Wetland Mapping Application)**
+**VAMIKA (Real NISAR-Based Flood & Wetland Change Mapping)**
 
-Document Date: November 15, 2026  
-Application Version: 2.0  
-Status: **PRODUCTION READY**
+Status: **LIVE IN PRODUCTION** — real NASA NISAR data only, zero mock/fabricated data anywhere in the pipeline
+
+**Live deployments:**
+- **GCP Compute Engine (primary):** http://34.31.239.90:8000 — real persistent disk, no request timeout, pre-seeded instant-demo Featured Locations
+- **Render (fallback):** https://nisar-flood-wetland-mapping.onrender.com — same code, auto-deploys from this repo, free tier (no persistent disk)
 
 ---
 
 ## Executive Summary
 
-The VAMIKA application has successfully completed all Phase 1 and Phase 2 development milestones and is ready for production deployment. The application provides emergency management professionals with real-time flood detection capabilities using NASA NISAR satellite data.
+VAMIKA performs real before/after NISAR L2 GCOV backscatter change detection for any real location and date range NASA's CMR catalog actually has data for — never substituting synthetic/mock data when real data isn't found. Detection classifies two distinct, physically-documented flood signatures (open water and flooded vegetation, per the [NASA/JPL "Floods" StoryMap](https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd)), with real OpenStreetMap-derived infrastructure impact and an explainable, rule-based confidence/priority score.
 
 **Key Achievements:**
-- ✅ Real NISAR data integration (ASF API)
-- ✅ Before-and-after SAR backscatter comparison
-- ✅ Automated inundation zone detection
-- ✅ Confidence scoring system
-- ✅ Infrastructure impact analysis
-- ✅ Multi-format export capabilities
-- ✅ Voice command support
-- ✅ Comprehensive documentation
-- ✅ Tested with 10+ historical flood scenarios
+- ✅ Real NASA CMR discovery + real NISAR L2 GCOV download/analysis (no mock data fallback)
+- ✅ Before-and-after SAR backscatter comparison, rendered from real pixel data
+- ✅ Dual flood-signature detection: open water (backscatter decrease) **and** flooded vegetation (backscatter increase / double-bounce) — previously only open water was detected
+- ✅ Speckle-noise filtering (minimum mapping unit) for scientifically valid, performant classification masks
+- ✅ Real, explainable confidence scoring (not a black-box ML score)
+- ✅ Real OpenStreetMap infrastructure impact analysis
+- ✅ Multi-format export (PDF, GeoJSON, KML, CSV) from real detected geometry
+- ✅ Pre-seeded "Featured Locations" instant-demo cache
+- ✅ Polarization selector (all 6 real NISAR GCOV channels) and multi-date pair selector
+- ✅ Live on a real GCP Compute Engine VM with persistent disk, plus a Render fallback
+- ✅ MIT LICENSE added for genuine open-source compliance
 
 ---
 
@@ -29,51 +33,48 @@ The VAMIKA application has successfully completed all Phase 1 and Phase 2 develo
 
 ### Phase 1: Core Analysis (Complete)
 
-| Feature | Status | Tested | Notes |
-|---------|--------|--------|-------|
-| Location search by name/coordinates | ✅ | Yes | Uses Nominatim geocoding |
-| Date range filtering | ✅ | Yes | Supports custom date windows |
-| NISAR scene discovery | ✅ | Yes | Real ASF API integration |
-| Before-and-after comparison | ✅ | Yes | Interactive slider interface |
-| Inundation highlighting | ✅ | Yes | Neon orange (#ff6b00) overlay |
-| Confidence badges | ✅ | Yes | 0-100 scale scoring |
-| Data quality metadata | ✅ | Yes | Tooltips on hover |
-| Voice command input | ✅ | Yes | Web Speech API integration |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Location search by name/coordinates | ✅ | Real Nominatim geocoding |
+| Date range filtering + polarization selector | ✅ | All 6 real NISAR GCOV polarizations supported |
+| NISAR scene discovery | ✅ | Real NASA CMR direct query, 3 data-maturity tiers |
+| Before-and-after comparison | ✅ | Interactive slider, real rendered SAR imagery |
+| Dual flood-signature highlighting | ✅ | Neon orange (open water) + lime green (flooded vegetation) |
+| Confidence badges | ✅ | Real, rule-based, explainable (not a black box) |
+| Data quality metadata | ✅ | Real geometry-compatibility/noise/age checks |
 
 ### Phase 2: Operational Impact (Complete)
 
-| Feature | Status | Tested | Notes |
-|---------|--------|--------|-------|
-| Area estimation (km²/sq mi) | ✅ | Yes | Real-time calculation |
-| Infrastructure layer toggles | ✅ | Yes | Roads, hospitals, settlements |
-| PDF export | ✅ | Yes | Summary with maps |
-| GeoJSON export | ✅ | Yes | For GIS applications |
-| KML export | ✅ | Yes | Google Earth compatible |
-| CSV export | ✅ | Yes | Data table format |
-| Shareable links | ✅ | Partial | QR codes generated |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Area estimation (km²) | ✅ | Real, from classified pixel counts |
+| Infrastructure layer toggles | ✅ | Real OpenStreetMap/Overpass (roads, hospitals, settlements) |
+| PDF/GeoJSON/KML/CSV export | ✅ | Built from real detected geometry |
+| Shareable links | ✅ | QR codes generated |
+| Featured Locations (pre-seeded instant demo) | ✅ | Curated real locations, cached for instant loading |
 
-### Phase 3: Context Features (Ready)
+### Phase 3: Context Features
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Wetland reference layer | 🔄 | Can be toggled on demand |
-| Historical trend analysis | 🔄 | Data layer ready |
-| Geospatial processing | ✅ | Implemented |
+| Multi-date pair selector | ✅ | Surfaces all real compatible before/after pairs CMR finds |
+| Population/damage estimation | ❌ Not implemented | Honestly reported as "Not available" — no gridded dataset integrated, deliberately not fabricated |
+| Meteomatics precipitation context | 🔄 Planned | Free hackathon API credit available, not yet integrated |
 
 ---
 
 ## Technology Stack
 
-| Component | Technology | Version | Status |
-|-----------|-----------|---------|--------|
-| **Frontend** | React.js + Leaflet.js | Latest | ✅ Production |
-| **Styling** | Tailwind CSS | Latest | ✅ Production |
-| **Backend** | FastAPI + Uvicorn | 0.104.1 | ✅ Production |
-| **Language** | Python | 3.8+ | ✅ Production |
-| **Geocoding** | Nominatim API | Current | ✅ Production |
-| **Data Source** | ASF NISAR API | Current | ✅ Production |
-| **Mapping** | Leaflet.js | Latest | ✅ Production |
-| **Imagery** | NumPy + PIL | Current | ✅ Production |
+| Component | Technology | Status |
+|-----------|-----------|--------|
+| **Frontend** | Single-file vanilla JS + Leaflet.js (`index.html`), no build step | ✅ Production |
+| **Backend** | FastAPI + Uvicorn | ✅ Production |
+| **Language** | Python 3.11 | ✅ Production |
+| **Geocoding** | Nominatim API | ✅ Production |
+| **Data Source** | NASA CMR + ASF Earthdata Cloud (real NISAR L2 GCOV only) | ✅ Production |
+| **SAR processing** | h5py, rasterio, pyproj, shapely, scipy, numpy | ✅ Production |
+| **Infrastructure analysis** | OpenStreetMap Overpass API | ✅ Production (external dependency, occasional outages) |
+| **Mapping** | Leaflet.js | ✅ Production |
 
 ---
 
@@ -145,9 +146,10 @@ The VAMIKA application has successfully completed all Phase 1 and Phase 2 develo
    - KML has 5 MB size limit
 
 5. **Flood Detection**
-   - Change detection based on backscatter thresholds
-   - May miss: flooded vegetation, urban flooding details
-   - May overestimate: shadows, layover effects
+   - Change detection classifies **both** open-water (backscatter decrease) and flooded-vegetation (backscatter increase, double-bounce) signatures — previously only open water was detected, which under-estimated flood extent in forested/vegetated floodplains
+   - Isolated speckle-noise pixel clusters are filtered before vectorization (minimum mapping unit)
+   - May still overestimate in areas with layover/shadow effects (not separately modeled)
+   - Population exposure and monetary damage are not estimated — no gridded dataset is integrated; reported honestly as "Not available" rather than fabricated
 
 ### Planned Improvements (Phase 3+)
 

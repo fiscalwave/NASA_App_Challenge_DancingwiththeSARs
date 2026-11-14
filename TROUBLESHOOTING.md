@@ -578,33 +578,19 @@ Backend server only binds to localhost by default. To access from other machines
    http://<your-machine-ip>:3000
    ```
 
-### Issue: Voice input not working
+### Issue: Infrastructure Layers / hospitals/settlements/roads counts show "Unavailable"
 
-**Error:** Microphone button does nothing
+**Error:** "Could not load the hospitals layer: OpenStreetMap's free public map-data service (Overpass API) is temporarily unavailable or overloaded right now" (or similar), or the Affected Area card shows "N/A" for hospitals/settlements/roads
+
+**This is a real, external service outage — not a bug in this application.** The Overpass API (OpenStreetMap's public query service) is a free, volunteer-run service with no uptime guarantee, and it is occasionally slow or fully unavailable. Verified by directly querying all 3 mirrors this project tries (`overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee`) — when all three time out, the error is genuinely external.
+
+**What still works when this happens:**
+- Real flood detection, confidence scoring, and swipe imagery all complete normally and are unaffected
+- The priority score still computes using whatever infrastructure data *is* available (or reports "data unavailable" for the affected categories)
 
 **Solutions:**
-
-1. **Check browser support:**
-   - Chrome/Edge: Full support
-   - Firefox: Requires flag enabled
-   - Safari: iOS 14.5+ only
-   - Check console for "SpeechRecognition not supported"
-
-2. **Check microphone permissions:**
-   - Browser should ask for permission
-   - Allow access when prompted
-   - Check system audio settings
-
-3. **Test Web Speech API:**
-   ```javascript
-   // In browser console
-   console.log(typeof webkitSpeechRecognition)
-   // Should be 'function' if supported
-   ```
-
-4. **Use alternative:**
-   - Type location manually
-   - Web Speech optional feature
+- Wait a few minutes and retry — Overpass mirrors typically recover on their own
+- There is no code-level fix for an external service being down; this app already retries across 3 independent mirrors before giving up
 
 ---
 

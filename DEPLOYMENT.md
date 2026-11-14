@@ -101,6 +101,70 @@ That's it — Render automatically rebuilds and redeploys. No dashboard steps re
 
 ---
 
+## GCP Compute Engine Deployment (Current Production — Primary)
+
+This is the **primary live deployment** for this project, provisioned using the team's NASA Space Apps hackathon GCP credits. Unlike Render's free tier, this is a real persistent VM: no reverse-proxy request timeout, real persistent disk (raw NISAR downloads survive restarts), and dramatically faster NASA Earthdata throughput (~60 MB/s sustained, vs. several minutes on Render's free tier).
+
+### Live URL
+
+```
+http://34.31.239.90:8000
+```
+
+**Share this URL directly with teammates — no login, VPN, or special setup is required.** The firewall rule (`allow-vamika-http`, ports 80/8000/22, source `0.0.0.0/0`) already permits public access from anywhere; anyone with the link can open it in a browser immediately, exactly like the Render URL. If the IP ever changes (e.g. after recreating the VM), update this doc and re-share — GCP's free tier does not guarantee a static IP unless a reserved external IP is explicitly configured.
+
+### Infrastructure details
+
+| Setting | Value |
+|---|---|
+| VM name | `vamika-server` |
+| Project | `project-7eda7e51-879e-406a-946` |
+| Zone | `us-central1-a` |
+| Machine type | `e2-standard-4` (4 vCPU, 16GB RAM) |
+| Disk | 100GB pd-balanced |
+| Port | 8000 (port 80 would require root; the app runs as the non-root `technojogi` user) |
+| Process manager | `systemd` service `vamika.service` (auto-restart on crash, starts on boot) |
+| Repo location | `/home/technojogi/vamika` |
+| Python venv | `/home/technojogi/vamika/backend/venv` |
+
+### Managing the live server (for maintainers with gcloud access)
+
+Connect via SSH:
+```bash
+gcloud compute ssh vamika-server --zone=us-central1-a
+```
+
+Deploy the latest code after a `git push`:
+```bash
+cd /home/technojogi/vamika
+git pull
+sudo systemctl restart vamika.service
+```
+
+Check service health / logs:
+```bash
+sudo systemctl status vamika.service
+sudo journalctl -u vamika.service -f
+curl -s http://localhost:8000/api
+```
+
+### Pre-seeded "Featured Locations" (instant demo cache)
+
+To avoid making every demo search wait several minutes for a fresh multi-gigabyte NASA download, a curated set of real, globally diverse locations (`backend/data/featured_locations.json`) can be pre-computed ahead of time via:
+
+```bash
+cd /home/technojogi/vamika/backend
+venv/bin/python scripts/preseed_featured_locations.py --base-url http://localhost:8000
+```
+
+This queries real NASA CMR for each curated location, downloads the best real before/after granule pair, runs the exact same real analysis pipeline a live user search uses, caches the small result (`backend/data/featured_cache.json`, not version-controlled), and deletes the raw multi-GB HDF5 files afterward to keep disk usage bounded. Already-cached locations are skipped automatically (safe to re-run); pass `--only <id1>,<id2>` to target specific locations, or `--force-refresh` to redo an already-cached one. A daily systemd timer (`featured-preseed.timer`) keeps these pre-seeded results current automatically — see `backend/scripts/featured-preseed.service`/`.timer`.
+
+### Render remains a fallback deployment
+
+Render (see above) is kept live and auto-deploying from the same GitHub repo as a backup/secondary URL. It has no persistent disk, so pre-seeded Featured Locations are never "instant" there — every search (including Featured Locations) goes through the real, full discover→download→analyze pipeline. Use it if the GCP VM is ever unreachable.
+
+---
+
 ## Docker Deployment
 
 ### Prerequisites

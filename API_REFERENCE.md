@@ -3,8 +3,36 @@
 ## Base URL
 
 ```
-http://localhost:8000
+http://34.31.239.90:8000   (live GCP deployment)
+http://localhost:8000       (local development)
 ```
+
+## Real v2 API (used by the live frontend)
+
+Everything below in this document (`/api/search`, `/api/imagery/comparison`, etc.) describes a **legacy v1 API** that is dormant and not called by the current frontend (`index.html`). It is kept for backward compatibility but should not be used for new integrations. **The real, live API is the `/api/v2/*` family**, summarized here:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/v2/discover` | POST | Real NASA CMR discovery of NISAR L2 GCOV granules for a bounds + date range, across all 3 data-maturity tiers. Flags compatible before/after pairs (same track/frame/pass direction). Returns an empty list — never mock data — if nothing is found. |
+| `/api/v2/featured` | GET | Lists curated "Featured Locations" (`backend/data/featured_locations.json`) with real metadata and `ready: true/false` depending on whether a real analysis has been pre-computed and cached for that location. |
+| `/api/v2/download/start` | POST | Starts (or resumes/dedup-skips) a real, resumable granule download in a background thread pool. Body: `{granule_id, download_url, expected_size_mb}`. |
+| `/api/v2/download/status/{granule_id}` | GET | Real, byte-accurate download progress, verified against the actual file on disk. |
+| `/api/v2/cache` | GET | Lists all granules known to the local download cache. |
+| `/api/v2/analyze` | POST | Thin handler: starts a real backscatter change-detection analysis in a background thread (real processing can take minutes) and returns `{"status": "processing", "status_url": ...}` immediately, or the full cached result if this exact request was already computed. Body: `{before_granule_id, after_granule_id, bounds, polarization, flood_change_threshold_db, low_backscatter_threshold_db}`. |
+| `/api/v2/analyze/status/{analysis_id}` | GET | Poll until `status` is no longer `"processing"`. On success, returns the full real summary (change statistics, classification statistics for both open-water and flooded-vegetation signatures, detection confidence, layer/geojson/visual URLs). |
+| `/api/v2/analyze/{id}/impact` | POST | Thin handler: starts real OpenStreetMap/Overpass-based infrastructure impact analysis (can take up to ~90s) in the background. |
+| `/api/v2/analyze/{id}/impact/status` | GET | Poll for the real impact result: infrastructure categories (hospitals/settlements/roads/schools/power plants) and an explainable priority score. |
+| `/api/v2/analyze/{id}/layer/{name}.tif` | GET | Real, full-resolution GeoTIFF layer (`before`, `after`, `change`, `possible_flood`, `possible_flooded_vegetation`, `persistent_water`). |
+| `/api/v2/analyze/{id}/geojson/{name}.geojson` | GET | Real vectorized flood/vegetation/water polygons. |
+| `/api/v2/analyze/{id}/visual/{before\|after}` | GET | Real SAR backscatter rendered as a base64 PNG for the swipe-comparison UI (downsampled for display only; the full-resolution GeoTIFF above is unaffected). |
+| `/api/v2/diagnostics/earthdata-auth` | GET | Safe (never exposes secrets) check of whether real Earthdata credentials are configured and valid. |
+| `/api/v2/diagnostics/external-cache` | GET | Whether the optional free external result cache (Cloudflare R2) is configured. |
+
+See `backend/app_real_api.py` for the authoritative, fully-commented implementation of every endpoint above.
+
+---
+
+## Legacy v1 API (dormant — kept for backward compatibility, not used by the live frontend)
 
 ## Authentication
 
@@ -384,15 +412,9 @@ curl http://localhost:8000/api/health
 
 ---
 
-## Future Endpoints
+## Future Endpoints (v1 legacy roadmap — superseded)
 
-Planned for Phase 3:
-
-- `POST /api/analysis` - Custom analysis parameters
-- `GET /api/export/{format}` - Export results (GeoJSON, KML, GeoTIFF)
-- `POST /api/analysis/save` - Save analysis for later retrieval
-- `GET /api/historical/{location}` - Historical flood/wetland statistics
-- `GET /api/confidence-factors` - Detailed confidence scoring breakdown
+These were originally planned for the legacy v1 API. All of them are **already implemented in the real v2 API** above instead: custom analysis parameters (`POST /api/v2/analyze` body), export (handled client-side in `index.html` from real v2 GeoJSON/summary data), and confidence-factors breakdown (`detection_confidence.quality_checks` in the `/api/v2/analyze` response).
 
 ---
 
@@ -400,9 +422,9 @@ Planned for Phase 3:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 2.0 | Nov 2026 | Production ready, real NISAR data integration |
-| 1.5 | Oct 2026 | Added confidence scoring, infrastructure layers |
-| 1.0 | Sep 2026 | Initial MVP with basic search and comparison |
+| v2 (current) | Nov 2026 | Real-data-only `/api/v2/*` API: NASA CMR discovery, real GCOV download/analysis, dual open-water + flooded-vegetation detection, real OpenStreetMap infrastructure impact, Featured Locations pre-seed cache. Legacy v1 endpoints below retained but dormant. |
+| 1.5 | Oct 2026 | Added confidence scoring, infrastructure layers (legacy v1 API) |
+| 1.0 | Sep 2026 | Initial MVP with basic search and comparison (legacy v1 API) |
 
 ---
 

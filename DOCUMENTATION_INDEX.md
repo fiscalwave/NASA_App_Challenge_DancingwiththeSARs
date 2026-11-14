@@ -5,9 +5,11 @@
 ## 📖 Start Here
 
 **New to the project?** Start with:
-1. [README.md](./README.md) - Overview and quick start (5 min read)
+1. [README.md](./README.md) - Overview, **live deployment URLs**, and quick start (5 min read)
 2. [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md) - Key facts and statistics (10 min read)
 3. This index - Navigate to what you need
+
+**Just want to try it right now?** Open **http://34.31.239.90:8000** (primary, GCP) or **https://nisar-flood-wetland-mapping.onrender.com** (fallback, Render) — no login required, share either link with anyone.
 
 ---
 
@@ -15,15 +17,14 @@
 
 | Document | Purpose | Read Time |
 |----------|---------|-----------|
-| **[README.md](./README.md)** | How to install and use the application | 5-10 min |
-| **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** | Solutions for common problems | 10-15 min |
+| **[README.md](./README.md)** | How to install and use the application, live deployment URLs | 5-10 min |
+| **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** | Solutions for common problems (including external Overpass outages) | 10-15 min |
 | **[PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md)** | What this project does & key statistics | 10-15 min |
 
 ### Quick Links in README
 - Installation instructions
 - Quick start guide
-- Usage examples (Houston, Venice)
-- Feature overview
+- Real feature overview (dual flood-signature detection, Featured Locations, polarization selector)
 
 ---
 
@@ -48,14 +49,13 @@
 
 | Document | Purpose | Read Time |
 |----------|---------|-----------|
-| **[DEPLOYMENT.md](./DEPLOYMENT.md)** | Production deployment guides | 20-30 min |
+| **[DEPLOYMENT.md](./DEPLOYMENT.md)** | Production deployment guides — **GCP Compute Engine (primary, live)** and Render (fallback) | 20-30 min |
 | **[PRODUCTION_STATUS.md](./PRODUCTION_STATUS.md)** | Current status & readiness | 10-15 min |
 
 ### Quick Links
-- Docker deployment
-- AWS EC2 setup
-- Google Cloud Run
-- Azure App Service
+- GCP Compute Engine VM setup, management, and sharing the live URL
+- Render.com auto-deploy setup
+- Pre-seeding the "Featured Locations" instant-demo cache
 - Pre-deployment checklist
 - Performance metrics
 

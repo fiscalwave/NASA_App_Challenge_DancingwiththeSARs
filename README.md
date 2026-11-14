@@ -1,10 +1,17 @@
 # VAMIKA
 
-**NISAR-Based Flood & Wetland Mapping Application**
+**Real NISAR-Based Flood & Wetland Change Mapping**
 
 **NASA International Space Apps Challenge | Disaster Response Technology**
 
-An open-source interactive web application for real-time flood and wetland change detection using NISAR satellite data, optimized for emergency management professionals.
+An open-source interactive web application for flood and wetland surface-change detection using real NASA-ISRO SAR (NISAR) satellite data — zero mock/synthetic/fabricated data anywhere in the pipeline. Every number, image, and polygon shown in the UI is derived from an actual downloaded NISAR L2 GCOV granule processed on demand.
+
+## Try it now
+
+| Deployment | URL | Notes |
+|---|---|---|
+| **GCP Compute Engine (primary)** | **http://34.31.239.90:8000** | Real persistent disk, fast NASA Earthdata throughput, pre-seeded instant demo locations. Share this link with anyone — no login required. |
+| Render (fallback) | https://nisar-flood-wetland-mapping.onrender.com | Same code, auto-deploys from this repo. Free tier: no persistent disk, may take 30-60s to wake from idle. |
 
 ## Challenge Problem Statement
 
@@ -12,17 +19,18 @@ Earth's surface is an endless dance of natural processes and human activities, b
 
 ## Overview
 
-This application enables emergency managers to quickly identify surface changes after flood events using satellite radar data from NASA's NISAR mission. It combines geospatial analysis with a user-friendly interface to support disaster response and field assessment prioritization.
+VAMIKA lets anyone — emergency managers, researchers, educators, or the public — search any location worldwide, pull the real NISAR acquisitions NASA's CMR catalog actually has for that area/date range, and run a genuine before/after L-band SAR backscatter change-detection analysis: no simulated imagery, no placeholder statistics, no synthetic scenes ever substituted when real data can't be found.
 
-**Target User:** Derek Hough, Emergency Management Analyst
-
-**Core Capability:** Before-and-after SAR backscatter analysis to detect inundation zones with confidence scoring and damage estimation.
+**Core capability:** Real before-and-after SAR backscatter change detection, classifying two distinct, physically-documented flood signatures (see the [NASA/JPL "Floods" StoryMap](https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd)):
+- **Open water** (backscatter decrease — specular/surface scattering)
+- **Flooded vegetation** (backscatter increase — double-bounce scattering beneath canopy, often dominant in forested floodplains/wetlands and invisible to optical satellites)
 
 ## Quick Start
 
 ### Prerequisites
-- Python 3.8+
-- Modern web browser (Chrome, Firefox, Safari, Edge)
+- Python 3.11+
+- Real [NASA Earthdata](https://urs.earthdata.nasa.gov/) account (free) — required; there is no mock-data mode
+- Modern web browser
 
 ### Installation
 
@@ -38,7 +46,13 @@ This application enables emergency managers to quickly identify surface changes 
    pip install -r requirements.txt
    ```
 
-3. **Start the application**
+3. **Configure real Earthdata credentials** — create `backend/.env` (see `backend/.env.example`):
+   ```
+   ASF_USERNAME=your_earthdata_username
+   ASF_PASSWORD=your_earthdata_password
+   ```
+
+4. **Start the application**
    ```bash
    python app_real_api.py
    ```
@@ -46,159 +60,119 @@ This application enables emergency managers to quickly identify surface changes 
 
 ### Using the Application
 
-1. **Search by location** - Enter city name or coordinates
-2. **Set search radius** - Define analysis area (5-100 km)
-3. **Select date range** - Choose pre-flood and post-flood dates
-4. **Discover scenes** - Query NISAR satellite acquisitions
-5. **Compare imagery** - Use slider to view before-and-after SAR backscatter
-6. **Analyze results** - Review affected area, confidence scores, infrastructure impact
-7. **Export findings** - Download as PDF, GeoJSON, KML, or CSV
+1. **Click a Featured Location** for an instant pre-cached real result, or **search any location** — enter a city name or `lat, lon` coordinates
+2. **Set search radius** (up to ~150 km, limited by real-data processing memory) and **date range**
+3. **Choose a polarization channel** (HH recommended for flood detection; all 6 real NISAR GCOV channels supported)
+4. Click **Discover Available Scenes** — this queries real NASA CMR directly; if more than one compatible before/after pair exists, a pair selector lets you pick which real dates to compare
+5. The app downloads the real granules, runs real backscatter change detection, and displays:
+   - A real before/after swipe comparison
+   - A real flood-extent map overlay (open water + flooded vegetation, color-coded)
+   - A transparent, rule-based confidence score (not a black-box probability)
+   - Real OpenStreetMap-derived infrastructure impact (hospitals/settlements/roads intersecting the detected flood polygon), computed in the background so you aren't blocked waiting on it
+6. **Export** real findings as PDF, GeoJSON, KML, or CSV
 
 ## Features
 
-### Phase 1: Core Analysis (Complete)
-- **Event & Location Filter Panel** - Search specific locations and date ranges
-- **Before-and-After Swipe View** - Split-screen comparison with interactive slider
-- **Automated Inundation Highlighting** - Orange overlay for detected flood zones on map
-- **Confidence Badges** - Data quality indicators (accuracy, atmospheric effects)
-- **Real NISAR Data** - Integration with ASF NASA API for actual satellite scenes
-
-### Phase 2: Operational Impact (Complete)
-- **Affected Area Estimator** - Calculate flooded area in km² or square miles
-- **Infrastructure Layer Toggles** - Overlay roads, hospitals, settlements
-- **Export Suite** - PDF reports, GeoJSON, KML, CSV formats
-- **Shareable Links** - Generate links for team coordination
-
-### Phase 3: Context Features (Ready)
-- **Wetland Reference Layer** - Historical wetland ranges
-- **Data Quality Metadata** - Geometric accuracy, layover/shadow effects
-- **Geospatial Processing** - Local geocoding and map visualization
+- **Real NASA CMR discovery** across NISAR's three data-maturity tiers (Validated/Provisional/Beta), honestly reporting zero results rather than ever substituting mock data
+- **Real before/after SAR swipe comparison**, rendered server-side from actual downloaded GCOV HDF5 pixel data
+- **Dual flood-signature detection**: open water (radar-dark) and flooded vegetation (radar-bright, double-bounce) — see [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) for the science
+- **Real infrastructure impact** (hospitals, settlements, roads, power plants) via live OpenStreetMap/Overpass spatial intersection, with an explainable, rule-based priority score
+- **Featured Locations**: a curated set of real, globally diverse flood/wetland-significant places, pre-computed for instant loading (see `backend/scripts/preseed_featured_locations.py`)
+- **Polarization selector** and **multi-date pair selector** when NASA CMR finds more than one compatible real acquisition pair
+- **Honest confidence scoring** — a transparent, rule-based score derived from real statistics (acquisition geometry match, noise level, observation age, candidate-pixel count), explicitly not a fabricated probability
+- **Export suite** — PDF, GeoJSON, KML, CSV, all built from real detected geometry (no circle-approximation placeholders)
 
 ## Architecture
 
 ### Technology Stack
-- **Frontend:** React.js + Leaflet.js + Tailwind CSS
+- **Frontend:** Single-page vanilla JS + Leaflet.js (`index.html`) — no build step, no framework
 - **Backend:** Python FastAPI + Uvicorn
-- **Geospatial:** GDAL, Rasterio, Nominatim geocoding
-- **Data Source:** ASF Search API, NISAR GCOV Level 2 products
+- **Geospatial/SAR processing:** h5py, rasterio, pyproj, shapely, scipy, numpy
+- **Data Source:** NASA CMR + ASF Earthdata Cloud, real NISAR L2 GCOV products only
 
 ### Directory Structure
 ```
 .
-├── index.html              # Main frontend application
+├── index.html                       # Main frontend application (single file, no build step)
 ├── backend/
-│   ├── app_real_api.py     # FastAPI server with real NISAR API integration
-│   ├── imagery_handler.py  # SAR backscatter visualization and processing
-│   ├── requirements.txt    # Python dependencies
-│   ├── .env.example        # Environment configuration template
-│   └── app/                # FastAPI route handlers
-├── data/
-│   └── scenes/             # NISAR scene files (HDF5 format)
-├── SYSTEM_ARCHITECTURE.md  # Technical architecture details
-└── README.md               # This file
+│   ├── app_real_api.py              # FastAPI server (live entrypoint)
+│   ├── imagery_handler.py           # Real SAR backscatter -> PNG rendering
+│   ├── requirements.txt             # Python dependencies
+│   ├── .env.example                 # Environment configuration template
+│   ├── scripts/
+│   │   └── preseed_featured_locations.py  # Pre-computes the Featured Locations cache
+│   ├── data/
+│   │   └── featured_locations.json  # Curated real locations (version-controlled)
+│   └── app/
+│       ├── ingestion/                # NASA CMR discovery + download manager
+│       ├── processing/               # GCOV reading, change detection, classification
+│       ├── analysis/                 # Infrastructure impact + priority scoring
+│       └── exports/                  # GeoTIFF/GeoJSON exporters
+├── SYSTEM_ARCHITECTURE.md           # Technical architecture details
+├── DEPLOYMENT.md                     # Deployment instructions (GCP VM, Render)
+└── README.md                         # This file
 ```
 
 ### Key API Endpoints
 
-**Base URL:** `http://localhost:8000`
+**Base URL:** `http://34.31.239.90:8000` (or `http://localhost:8000` for local development)
 
-- `GET /api/search?location=<location>&radius=<km>&start_date=<YYYY-MM-DD>&end_date=<YYYY-MM-DD>` - Query NISAR scenes
-- `GET /api/imagery/comparison?scene_id=<id>` - Generate before-after visualizations
-- `GET /api/health` - Server health check
+- `POST /api/v2/discover` — Real NASA CMR discovery for an area/date range
+- `GET /api/v2/featured` — List curated Featured Locations and their pre-seeded readiness
+- `POST /api/v2/download/start` + `GET /api/v2/download/status/{granule_id}` — Real, resumable granule download
+- `POST /api/v2/analyze` + `GET /api/v2/analyze/status/{id}` — Real change-detection analysis (background job + polling)
+- `POST /api/v2/analyze/{id}/impact` + `GET /api/v2/analyze/{id}/impact/status` — Real OpenStreetMap infrastructure impact
+- `GET /api/v2/analyze/{id}/visual/{before|after}` — Real rendered SAR backscatter PNG
+- `GET /api/v2/analyze/{id}/geojson/{layer}` — Real detected flood polygon(s)
+- See [API_REFERENCE.md](./API_REFERENCE.md) for the complete list
+- See [API_REFERENCE.md](./API_REFERENCE.md) for the complete list
 
 ## NISAR Data Reference
 
-**Mission:** NASA-ISRO Synthetic Aperture Radar
+**Mission:** NASA-ISRO Synthetic Aperture Radar (launched July 30, 2025; Science Operations Phase began January 2026)
 
-**Product Type:** GCOV (Geocoded Covariance Matrix) - Level 2
-
-**Data Availability:**
-- Provisional products available: July 20, 2026+
-- Coverage begins: June 17, 2026
-- Latency: 36-72 hours for Level 1-3 products
+**Product Type:** L2 GCOV (Geocoded Covariance Matrix), queried across all three real data-maturity tiers (Validated/Provisional/Beta) directly via NASA CMR
 
 **Why L-band SAR?**
-- Better penetration through clouds and vegetation
-- Distinctive backscatter signature for standing water
-- Reliable detection of surface changes
-- All-weather capability (day/night)
+- Penetrates cloud cover and operates day or night (all-weather capability)
+- Longer wavelength penetrates vegetation canopy further than C-band sensors, enabling detection of water *beneath* forest/vegetation (invisible to optical satellites)
+- Produces two distinct, physically real flood signatures: open water (backscatter decrease) and flooded vegetation (backscatter increase, double-bounce)
 
 ## Environment Setup
 
-Create `.env` file in `backend/` directory:
+Create `backend/.env` (see `backend/.env.example`):
 ```
-ASF_API_BASE_URL=https://api.daac.asf.alaska.edu
-NOMINATIM_BASE_URL=https://nominatim.openstreetmap.org
-```
-
-## Usage Examples
-
-### Example 1: Houston Flood (Hurricane Storm Surge)
-```
-Location: Houston, Texas
-Coordinates: 29.2241, -94.7623
-Search Radius: 70 km
-Start Date: 2026-08-22
-End Date: 2026-09-05
-Expected: 12+ NISAR scenes available
-Expected confidence: 90%+
-Flooded area: 65+ km²
+ASF_USERNAME=your_earthdata_username
+ASF_PASSWORD=your_earthdata_password
 ```
 
-### Example 2: Venice Lagoon (Acqua Alta)
-```
-Location: Venice, Italy
-Coordinates: 45.4408, 12.3155
-Search Radius: 50 km
-Start Date: 2026-07-21
-End Date: 2026-08-15
-Expected: Multiple scenes with infrastructure overlap
-```
+Real [NASA Earthdata](https://urs.earthdata.nasa.gov/) credentials (free account) are required — there is no mock-data fallback mode.
 
-## Confidence Scoring System
+## Confidence Scoring
 
-Confidence badges indicate data reliability:
+The confidence score shown for each analysis is a **transparent, rule-based score derived entirely from real Phase 5 change-detection statistics** — not a black-box ML probability and not derived from any atmospheric/layover model (which this project does not compute). It reflects four real, explainable checks:
+- Acquisition geometry match (same track/frame/pass direction between before/after)
+- Backscatter noise level (signal std. dev.)
+- Observation age (how recently the "after" granule was acquired)
+- Candidate change-pixel count
 
-- **95-100%** - Excellent (clear change, ideal conditions)
-- **80-94%** - Good (clear signals, minor atmospheric effects)
-- **60-79%** - Fair (detectable but with caveats)
-- **Below 60%** - Poor (validate with independent data)
+Each check's pass/fail state and underlying real value are shown directly in the UI — see `backend/app/analysis/priority.py` (`compute_detection_confidence`).
 
-Factors affecting confidence:
-- Scene coherence (temporal correlation)
-- Atmospheric effects (ionospheric distortion)
-- Geometric layover/shadow presence
-- Multi-temporal consistency
+## Known Limitations (Stated Honestly)
 
-## Testing & Validation
-
-Application tested with 10+ historical flood events:
-
-- Houston, Texas (Hurricane storm surge)
-- Venice, Italy (Seasonal flooding)
-- Bangladesh (Monsoon flooding)
-- Australia (Coastal flooding)
-- Pakistan (Flash flooding)
-- Indonesia (Volcanic flooding)
-- USA (River flooding)
-- And more...
-
-**All tests verified:**
-- Correct NISAR scene retrieval
-- Proper geocoding
-- Accurate confidence scoring
-- Infrastructure overlap detection
-- Export functionality
+- **Population exposure and monetary damage estimates are not provided** — no gridded population (e.g. WorldPop, GPW) or damage dataset is currently integrated; the UI reports these as "Not available" rather than inventing a figure.
+- **Infrastructure impact (hospitals/settlements/roads) depends on the public OpenStreetMap Overpass API**, which has no uptime guarantee and is occasionally slow/unavailable; when this happens, the UI reports "Unavailable" and the rest of the analysis (flood detection, imagery, confidence) still completes normally.
+- **A real AOI search radius is capped (~150 km on the current GCP VM)** to stay within safe in-memory processing limits for real multi-gigabyte GCOV files.
+- **Not every real NISAR granule carries every polarization channel** — the polarization selector lets you try an alternate channel if your first choice isn't available for a given pair.
 
 ## Troubleshooting
 
-### "No scenes found"
-- **Issue:** Search returns no NISAR acquisitions
+### "No compatible before/after pairs found"
+- **Issue:** Real acquisitions exist individually but none share the same track/frame/pass direction within the requested windows
 - **Solutions:**
-  - Check date range (data available from June 17, 2026)
-  - Verify location coordinates are valid
-  - Increase search radius (5-100 km range)
-  - Check global coverage maps at NISAR website
+  - Widen the date range
+  - Try a different location — NISAR's revisit cadence (6-12 days) means not every area has two compatible passes yet this early in the mission
+  - Double-check your start/end dates aren't reversed
 
 ### "API connection error"
 - **Issue:** Backend cannot connect to ASF or other APIs
@@ -226,63 +200,48 @@ Application tested with 10+ historical flood events:
 
 ## Performance Notes
 
-- **Initial load:** 2-3 seconds (assets cached)
-- **Scene search:** 3-10 seconds (depending on API response)
-- **Image comparison generation:** 2-5 seconds
-- **Map rendering:** <1 second
-- **Export generation:** 1-3 seconds
-
-Optimization tips:
-- Reduce search radius for faster queries
-- Use shorter date ranges
-- Close other browser tabs to free memory
+- **Featured Locations (pre-seeded):** results render within seconds — real analysis was already computed ahead of time and is replayed from cache, with no new download
+- **Novel/live searches:** real multi-gigabyte NASA granule downloads and real backscatter processing take genuine time (download time depends on file size and network; analysis typically completes in seconds to low minutes once downloaded) — this cannot be made instant without fabricating data, which this project does not do
+- Before/after granules download in parallel, not sequentially
+- Infrastructure impact (OpenStreetMap) computes in the background after flood-detection results are already shown, so you are never blocked waiting on it
 
 ## Production Deployment
 
-### Docker Deployment
-```bash
-cd backend
-docker build -t nisar-app .
-docker run -p 8000:8000 nisar-app
-```
-
-### Cloud Platforms
-- AWS EC2 with Nginx reverse proxy
-- Google Cloud Run with CloudBuild
-- Azure App Service
-
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed instructions.
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full guide, including:
+- The current live GCP Compute Engine deployment (primary) and how to share/manage it
+- The Render.com fallback deployment (auto-deploys on every push)
+- Local development setup
 
 ## Contributing Guidelines
 
 - Follow PEP 8 for Python code
-- Use consistent naming conventions
-- Add comments for complex logic
-- Test changes before submitting
+- Never introduce mock/synthetic/fabricated data as a fallback for a missing real result — report the real absence honestly instead
+- Add comments for complex or non-obvious logic
+- Test changes against real data before submitting
 - Include documentation updates
 
 ## License
 
-Open source - NASA Space Apps Challenge submission
+MIT License — see [LICENSE](./LICENSE). This project uses publicly available NASA NISAR data (via NASA Earthdata/ASF) and OpenStreetMap data (via Overpass); it is an independent project and is not endorsed by or affiliated with NASA, ISRO, or the OpenStreetMap Foundation.
 
 ## References
 
 - [NISAR Mission](https://nisar.jpl.nasa.gov/)
 - [NISAR Documentation](https://nisar-docs.asf.alaska.edu/)
 - [ASF Search API](https://docs.asf.daac.asf.alaska.edu/api/)
+- [NASA/JPL "Floods" StoryMap](https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd) — the scientific basis for this project's dual open-water/flooded-vegetation detection approach
 - [SAR Fundamentals](https://www.usgs.gov/faqs/what-synthetic-aperture-radar)
 
 ## Support
 
 For questions or issues:
-1. Check Troubleshooting section above
-2. Review system logs: `backend/logs/app.log`
+1. Check the Troubleshooting section above and [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
+2. Review system logs: `backend/logs/app.log`, or `sudo journalctl -u vamika.service -f` on the GCP VM
 3. Check browser console for frontend errors
-4. Verify all dependencies installed
+4. Verify all dependencies installed and real Earthdata credentials are configured
 
 ---
 
-**Last Updated:** November 2026  
-**Status:** Production Ready  
+**Status:** Live, real-data-only production deployment  
 **Version:** 2.0  
 **NASA Space Apps Challenge Submission**

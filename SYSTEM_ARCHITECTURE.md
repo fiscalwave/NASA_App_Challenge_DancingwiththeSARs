@@ -1,6 +1,26 @@
 # VAMIKA - System Architecture (NISAR-Based Flood & Wetland Mapping)
 
-## 🏗️ System Architecture Diagram
+## ⚡ Current Real Production Architecture (authoritative — read this first)
+
+The diagrams and file-structure sketches further down this document were written during early planning and describe a React/Vite frontend and a single-threshold flood-only detector that were **never built that way**. The real, live system is simpler and different in several important respects:
+
+- **Frontend:** a single static file, `index.html` (vanilla JS + Leaflet.js) — no build step, no React, no Vite, no voice interface (removed).
+- **Backend:** `backend/app_real_api.py` (FastAPI), with real processing logic in `backend/app/` (`ingestion/`, `processing/`, `analysis/`, `exports/`).
+- **Change detection is two-signature, not single-threshold.** Per the NASA/JPL ["Floods" StoryMap](https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd), SAR flood brightness is not one-directional:
+  - **Open water** (specular/surface scattering): backscatter **decreases**, pixel appears radar-dark
+  - **Flooded vegetation** (double-bounce scattering beneath canopy): backscatter **increases**, pixel appears radar-bright — this is the dominant signature in forested floodplains/wetlands and is invisible to optical satellites
+  - Both are computed by `ChangeDetectionEngine.create_flood_classification_masks()` (`backend/app/processing/change_detection.py`), returning three masks: `possible_flood` (open water), `possible_flooded_vegetation`, and `persistent_low_backscatter` (permanent water)
+- **Speckle-noise filtering:** before vectorizing any mask to GeoJSON, isolated connected-pixel clusters smaller than a minimum size (default 9 pixels, `scipy.ndimage.label`) are removed. This is standard real SAR flood-mapping practice (a "minimum mapping unit" filter), and also fixes a real performance bug where unfiltered noise produced 200+MB GeoJSON files for some real AOIs.
+- **Background-job + polling architecture:** `/api/v2/analyze` and `/api/v2/analyze/{id}/impact` are thin handlers — they kick off real processing in a background thread and return `{"status": "processing", "status_url": ...}` immediately; the frontend polls until done. This exists because reverse proxies (e.g. Render's) kill long synchronous requests, and because real GCOV processing/Overpass queries can take from seconds to ~90 seconds.
+- **Pre-seeded "Featured Locations" cache (Tier 1 speed optimization):** a curated list of real, globally diverse locations (`backend/data/featured_locations.json`) can be pre-computed offline via `backend/scripts/preseed_featured_locations.py`, which runs the exact same real discover→download→analyze→impact pipeline a live search uses, caches only the small derived result, and deletes the raw multi-GB HDF5 afterward. `GET /api/v2/featured` tells the frontend which locations are cache-ready for instant loading.
+- **Real-data-only guarantee:** no code path anywhere substitutes synthetic/mock/fabricated data when a real result can't be found — absence is always reported honestly (empty lists, "Not available", "Unavailable"), never invented.
+- **Live deployments:** GCP Compute Engine VM at `http://34.31.239.90:8000` (primary — real persistent disk, no request timeout) and Render (`https://nisar-flood-wetland-mapping.onrender.com`, fallback — free tier, no persistent disk). See [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+See [API_REFERENCE.md](./API_REFERENCE.md) for the real `/api/v2/*` endpoint list and `backend/app_real_api.py` for the authoritative implementation.
+
+---
+
+## 🏗️ Original Planning Diagram (historical — kept for context, not fully accurate to the current build)
 
 ```mermaid
 graph TB
@@ -265,6 +285,4 @@ project/
 
 ---
 
-**Last Updated:** 2026-11-05
-**Version:** Phase 1.0
-**Status:** 🚀 In Development
+**Status:** 🚀 Live production deployment (see "Current Real Production Architecture" at the top of this document for what's actually running)

@@ -9,30 +9,28 @@
 
 | Item | Value |
 |------|-------|
-| Project Status | ✅ Production Ready |
-| Version | 2.0 |
-| Last Updated | November 2026 |
-| Lines of Code | ~5,000+ |
-| Documentation Files | 7 comprehensive guides |
-| Test Coverage | 10+ flood scenarios validated |
+| Project Status | ✅ Live in production — real NISAR data only |
+| Primary Deployment | GCP Compute Engine VM — http://34.31.239.90:8000 |
+| Fallback Deployment | Render — https://nisar-flood-wetland-mapping.onrender.com |
 | Browser Support | Chrome, Firefox, Safari, Edge |
-| Deployment Platforms | AWS, GCP, Azure, Docker, Local |
 
 ---
 
 ## What This Application Does
 
-This application helps emergency management professionals **rapidly identify and assess surface changes after flood events** using NASA's NISAR satellite data. It provides:
+This application lets anyone — emergency managers, researchers, educators, or the public — **rapidly identify and assess real surface changes after flood events** using NASA's NISAR satellite data, with zero mock/fabricated data anywhere in the pipeline. It provides:
 
-- **Real-time flood detection** using satellite radar
-- **Before-and-after comparison** with interactive slider
-- **Affected area calculation** in square kilometers
-- **Infrastructure impact analysis** (roads, hospitals, settlements)
-- **Multi-format export** (PDF, GeoJSON, KML, CSV)
-- **Confidence scoring** for data reliability
-- **Voice command support** for hands-free operation
+- **Real NASA CMR discovery + download** of real NISAR L2 GCOV granules
+- **Before-and-after comparison** with interactive slider, rendered from real pixel data
+- **Dual flood-signature detection**: open water (backscatter decrease) **and** flooded vegetation (backscatter increase / double-bounce), per the [NASA/JPL "Floods" StoryMap](https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd)
+- **Affected area calculation** in square kilometers, from real classified pixel counts
+- **Real infrastructure impact analysis** (roads, hospitals, settlements) via live OpenStreetMap
+- **Multi-format export** (PDF, GeoJSON, KML, CSV) from real detected geometry
+- **Honest, explainable confidence scoring** — a transparent rule-based score, not a black-box probability
+- **Pre-seeded "Featured Locations"** for an instant demo experience on real, pre-computed locations
+- **Polarization selector** (all 6 real NISAR GCOV channels) and a **multi-date pair selector**
 
-**Target User:** Emergency managers responding to flood disasters
+**Target User:** Anyone needing a fast, honest read on real satellite-detected surface change — emergency managers, researchers, educators, and the public alike
 
 ---
 
@@ -70,17 +68,17 @@ Export Generation:      1-3 seconds
 
 ## Core Technologies
 
-| Layer | Technology | Version | Purpose |
-|-------|-----------|---------|---------|
-| Frontend UI | React.js | Latest | Interactive dashboard |
-| Mapping | Leaflet.js | Latest | Geographic visualization |
-| Styling | Tailwind CSS | Latest | Modern UI/UX |
-| Backend API | FastAPI | 0.104.1 | RESTful endpoints |
-| Server | Uvicorn | Latest | ASGI application server |
-| Geocoding | Nominatim API | Current | Location to coordinates |
-| Satellite Data | ASF API | Current | NISAR scene discovery |
-| Image Processing | NumPy + PIL | Current | SAR backscatter analysis |
-| Language | Python | 3.8+ | Backend implementation |
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Frontend UI | Vanilla JS (single file, `index.html`) | Interactive dashboard, no build step |
+| Mapping | Leaflet.js | Geographic visualization |
+| Backend API | FastAPI | RESTful `/api/v2/*` endpoints |
+| Server | Uvicorn | ASGI application server |
+| Geocoding | Nominatim API | Location to coordinates |
+| Satellite Data | NASA CMR + ASF Earthdata Cloud | Real NISAR L2 GCOV discovery/download |
+| SAR Processing | h5py, rasterio, pyproj, shapely, scipy, numpy | Real GCOV reading, change detection, classification |
+| Infrastructure Impact | OpenStreetMap Overpass API | Real hospitals/settlements/roads intersection |
+| Language | Python 3.11 | Backend implementation |
 
 ---
 
@@ -88,28 +86,28 @@ Export Generation:      1-3 seconds
 
 ### ✅ Phase 1: Core Analysis (Complete)
 - Location search by name or coordinates
-- Date range filtering
-- NISAR scene discovery from real ASF API
-- Interactive before-and-after slider comparison
-- Automated inundation zone detection (orange overlay)
-- Confidence scoring (0-100 scale)
-- Data quality metadata tooltips
-- Voice command input support
+- Date range filtering + polarization selector (all 6 real NISAR GCOV channels)
+- NISAR scene discovery from real NASA CMR (no mock-data fallback)
+- Interactive before-and-after slider comparison, rendered from real pixel data
+- Dual flood-signature detection: open water (orange overlay) + flooded vegetation (lime green overlay, double-bounce)
+- Real, explainable confidence scoring (rule-based, not a black box)
+- Data quality metadata (geometry compatibility, noise, observation age)
 
 ### ✅ Phase 2: Operational Impact (Complete)
-- Affected area calculation (km² and square miles)
-- Infrastructure layer toggles (roads, hospitals, settlements)
+- Affected area calculation (km²), split by signature (open water vs. flooded vegetation)
+- Infrastructure layer toggles (roads, hospitals, settlements) via real OpenStreetMap
 - PDF export with maps and metrics
 - GeoJSON export for GIS integration
 - KML export (Google Earth compatible)
 - CSV export for data analysis
 - Shareable links with QR codes
+- Pre-seeded "Featured Locations" for instant real-data demos
 
-### 🔄 Phase 3: Context Features (Ready for Implementation)
-- Wetland reference layers
-- Historical flood/wetland databases
-- Advanced temporal analysis
-- Machine learning flood detection
+### 🔄 Phase 3: Context Features (Partial / Planned)
+- Multi-date pair selector (✅ complete — surfaces all real compatible before/after pairs)
+- Gridded population/damage estimation (not implemented — honestly reported as unavailable)
+- Meteomatics precipitation context (planned, hackathon API credit available)
+- Historical flood/wetland databases (not implemented)
 
 ---
 
@@ -119,7 +117,7 @@ Export Generation:      1-3 seconds
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CLIENT BROWSER                           │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  index.html (React.js + Leaflet.js + Tailwind CSS)     │  │
+│  │  index.html (vanilla JS + Leaflet.js, no build step)    │  │
 │  │  • Search interface                                      │  │
 │  │  • Interactive map with flood overlay                    │  │
 │  │  • Before/after swipe comparison                         │  │
