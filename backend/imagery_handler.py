@@ -206,37 +206,30 @@ class SARBackscatterRenderer:
         neon orange for open-water inundation (radar-dark, specular
         scattering) and lime green for flooded vegetation (radar-bright,
         double-bounce scattering) - see NASA/JPL "Floods" StoryMap
-        (https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd)."""
-        
-        # Convert grayscale to RGB if needed
+        (https://storymaps.arcgis.com/stories/c00d7691b8004b20a14f28df710d05fd).
+
+        Vectorized with numpy boolean indexing (not a per-pixel Python loop +
+        putpixel(), which measured 2+ minutes for a real multi-million-pixel
+        AOI image) - same 47%-opacity alpha-blend result, computed in bulk."""
+
         if img.mode == 'L':
             img = img.convert('RGB')
-        
-        # Create overlay
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        
-        # Apply neon orange color (#FF6B00) with transparency to open-water flood mask
-        if inundation_mask is not None:
-            for i in range(self.height):
-                for j in range(self.width):
-                    if inundation_mask[i, j] > 0.5:  # If pixel is marked as flooded
-                        overlay.putpixel((j, i), (255, 107, 0, 120))  # Neon orange, 47% opacity
 
-        # Apply lime green color (#39FF14) to flooded-vegetation mask - kept
-        # visually distinct from open water since it's a physically different
-        # SAR signature (backscatter increase, not decrease)
+        img_array = np.array(img, dtype=np.float32)
+        alpha = 120 / 255.0
+
+        def blend(mask: np.ndarray, color: Tuple[int, int, int]) -> None:
+            region = mask > 0.5  # NaN (invalid) pixels compare False, same as the original loop
+            color_arr = np.array(color, dtype=np.float32)
+            img_array[region] = img_array[region] * (1 - alpha) + color_arr * alpha
+
+        if inundation_mask is not None:
+            blend(inundation_mask, (255, 107, 0))  # Neon orange, 47% opacity
+
         if vegetation_flood_mask is not None:
-            for i in range(self.height):
-                for j in range(self.width):
-                    if vegetation_flood_mask[i, j] > 0.5:
-                        overlay.putpixel((j, i), (57, 255, 20, 120))  # Lime green, 47% opacity
-        
-        # Composite overlay onto base image
-        img = img.convert('RGBA')
-        img = Image.alpha_composite(img, overlay)
-        img = img.convert('RGB')
-        
-        return img
+            blend(vegetation_flood_mask, (57, 255, 20))  # Lime green, 47% opacity
+
+        return Image.fromarray(np.clip(img_array, 0, 255).astype(np.uint8), mode='RGB')
     
     def _add_metadata(self, img: Image.Image, title: str) -> Image.Image:
         """Add title and metadata text to image."""
