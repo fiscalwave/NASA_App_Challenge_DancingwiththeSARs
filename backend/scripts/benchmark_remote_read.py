@@ -144,7 +144,7 @@ def benchmark_remote_fsspec(url: str, bbox: Dict[str, float], token: str) -> Dic
         block_size=8 * MB,
     )
     f = fs.open(url, "rb")
-    tree = xr.open_datatree(
+    ds = xr.open_dataset(
         f,
         engine="h5netcdf",
         decode_timedelta=False,
@@ -154,7 +154,6 @@ def benchmark_remote_fsspec(url: str, bbox: Dict[str, float], token: str) -> Dic
     )
     t_open_elapsed = time.perf_counter() - t_open_start
 
-    ds = tree.ds
     # Real NISAR GCOV grids carry their CRS as an "epsg_code" HDF5 ATTRIBUTE
     # on the "projection" variable (confirmed directly against a real local
     # granule - it is NOT a plain scalar dataset value as a literal .item()
