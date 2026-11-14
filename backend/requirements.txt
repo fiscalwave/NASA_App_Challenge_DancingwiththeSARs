@@ -16,6 +16,7 @@ h5py==3.12.1
 rasterio==1.4.3
 pyproj==3.7.1
 shapely==2.0.6
+scipy==1.16.0
 
 # Utilities
 python-dotenv==1.0.1

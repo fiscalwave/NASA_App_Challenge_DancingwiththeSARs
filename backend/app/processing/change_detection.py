@@ -97,6 +97,37 @@ class ChangeDetectionEngine:
             raise ProcessingError(f"Alignment failed: {str(e)}")
 
     @staticmethod
+    def _remove_speckle_noise(mask: np.ndarray, min_cluster_pixels: int = 9) -> np.ndarray:
+        """
+        Removes isolated small clusters of candidate pixels (SAR speckle
+        noise) from a binary classification mask, preserving NaN (invalid)
+        pixels. This is a standard "minimum mapping unit" filter used in
+        real SAR flood-mapping practice: coherent water bodies/vegetation
+        change spans multiple contiguous pixels, while single- or few-pixel
+        clusters passing a backscatter threshold are typically measurement
+        noise (speckle), not real surface change. Without this, a noisy real
+        classification mask can contain hundreds of thousands of isolated
+        tiny "polygons" when vectorized to GeoJSON - both scientifically
+        spurious and, for large AOIs, slow enough to make the whole analysis
+        appear to hang (observed directly: an unfiltered mask produced a
+        200+MB GeoJSON with an enormous polygon count for a real AOI).
+        """
+        from scipy import ndimage
+
+        valid = np.isfinite(mask)
+        binary = np.nan_to_num(mask, nan=0.0) > 0.5
+        labeled, num_features = ndimage.label(binary)
+        if num_features > 0:
+            sizes = ndimage.sum(binary, labeled, range(1, num_features + 1))
+            small_labels = np.where(sizes < min_cluster_pixels)[0] + 1
+            if len(small_labels) > 0:
+                binary[np.isin(labeled, small_labels)] = False
+
+        cleaned = np.full(mask.shape, np.nan, dtype=np.float32)
+        cleaned[valid] = binary[valid].astype(np.float32)
+        return cleaned
+
+    @staticmethod
     def create_flood_classification_masks(
         before: np.ndarray,
         after: np.ndarray,
@@ -105,6 +136,7 @@ class ChangeDetectionEngine:
         low_backscatter_threshold_db: float = -15.0,
         pixel_area_km2: float = 1.0,
         vegetation_increase_threshold_db: float = 2.0,
+        min_cluster_pixels: int = 9,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
         """
         Create flood detection and water classification masks.
@@ -144,6 +176,8 @@ class ChangeDetectionEngine:
             low_backscatter_threshold_db: Backscatter threshold for water-like surfaces
             pixel_area_km2: Area per pixel for area calculations
             vegetation_increase_threshold_db: Minimum backscatter increase to flag potential flooded vegetation
+            min_cluster_pixels: Minimum connected-pixel cluster size to keep (speckle-noise/minimum-mapping-unit
+                filter); isolated smaller clusters are removed before vectorization
 
         Returns:
             Tuple of:
@@ -176,6 +210,19 @@ class ChangeDetectionEngine:
                 (before[valid] <= low_backscatter_threshold_db)
                 & (after[valid] <= low_backscatter_threshold_db)
             ).astype(np.float32)
+
+            # Remove isolated speckle-noise clusters before computing stats/
+            # vectorizing - see _remove_speckle_noise docstring for why this
+            # matters (scientific validity + avoiding pathologically large/
+            # slow-to-vectorize noisy masks on real data).
+            if min_cluster_pixels > 1:
+                possible_flood = ChangeDetectionEngine._remove_speckle_noise(possible_flood, min_cluster_pixels)
+                possible_flooded_vegetation = ChangeDetectionEngine._remove_speckle_noise(
+                    possible_flooded_vegetation, min_cluster_pixels
+                )
+                persistent_low_backscatter = ChangeDetectionEngine._remove_speckle_noise(
+                    persistent_low_backscatter, min_cluster_pixels
+                )
             
             # Calculate statistics
             valid_pixels = int(valid.sum())
