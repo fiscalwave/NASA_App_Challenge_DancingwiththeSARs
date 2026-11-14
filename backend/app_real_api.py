@@ -952,13 +952,19 @@ def _get_gcov_data(
     mock data - every path here reads a real NISAR granule, either over the
     network a subset at a time, or from a fully downloaded local file.
 
-    Fallback is triggered by (in order of likelihood): no download_url
-    provided (old-style request), remote read disabled, or any exception
-    from the remote read itself (network error, timeout, or an HDF5 edge
-    case the remote path doesn't yet handle) - logged as a warning, never
-    silently swallowed.
+    Fallback is triggered by (in order of likelihood): the granule is already
+    fully downloaded locally (reading the local file directly is always at
+    least as fast as a remote read, so there's no reason to go over the
+    network in that case), no download_url provided (old-style request),
+    remote read disabled, or any exception from the remote read itself
+    (network error, timeout, or an HDF5 edge case the remote path doesn't
+    yet handle) - logged as a warning, never silently swallowed.
     """
-    if REMOTE_READ_ENABLED and download_url and GCOVReader is not None:
+    already_local = (
+        download_manager is not None
+        and download_manager.get_status(granule_id).get("status") == "complete"
+    )
+    if REMOTE_READ_ENABLED and download_url and not already_local and GCOVReader is not None:
         try:
             token = edl_token_manager.get_token()
             remote_result: Dict[str, Any] = {}
