@@ -146,17 +146,40 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
 
 
 def wait_for_download(base_url: str, granule_id: str, download_url: str, expected_size_mb: Optional[float]) -> str:
-    """Starts/polls a real download to completion and returns the local file path."""
-    resp = requests.post(
-        f"{base_url}/api/v2/download/start",
-        json={"granule_id": granule_id, "download_url": download_url, "expected_size_mb": expected_size_mb},
-        timeout=30,
-    )
-    resp.raise_for_status()
+    """Starts/polls a real download to completion and returns the local file
+    path. The server can be briefly slow to respond while a CPU-heavy real
+    GCOV analysis is running concurrently on another location (single-process
+    uvicorn, GIL-bound numpy/rasterio work) - retries a few times on a
+    request timeout rather than failing the whole location outright."""
+    last_error = None
+    for attempt in range(5):
+        try:
+            resp = requests.post(
+                f"{base_url}/api/v2/download/start",
+                json={"granule_id": granule_id, "download_url": download_url, "expected_size_mb": expected_size_mb},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            break
+        except requests.RequestException as e:
+            last_error = e
+            print(f"    (retry {attempt + 1}/5) could not start download for {granule_id}: {e}")
+            time.sleep(10)
+    else:
+        raise RuntimeError(f"Could not start download for {granule_id} after retries: {last_error}")
 
     deadline = time.time() + DOWNLOAD_TIMEOUT_SECONDS
+    consecutive_failures = 0
     while time.time() < deadline:
-        status = requests.get(f"{base_url}/api/v2/download/status/{granule_id}", timeout=30).json()
+        try:
+            status = requests.get(f"{base_url}/api/v2/download/status/{granule_id}", timeout=60).json()
+        except requests.RequestException as e:
+            consecutive_failures += 1
+            if consecutive_failures > 10:
+                raise RuntimeError(f"Too many consecutive status-poll failures for {granule_id}: {e}")
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
+        consecutive_failures = 0
         if status.get("status") == "complete":
             return status["local_path"]
         if status.get("status") in ("error", "failed"):
@@ -204,6 +227,23 @@ def cleanup_raw_granules(granule_ids: List[str]) -> None:
         save_json(MANIFEST_PATH, manifest)
 
 
+def resilient_request(method: str, url: str, retries: int = 5, **kwargs) -> requests.Response:
+    """A plain requests call with a few retries on transient network/timeout
+    errors - the server can be briefly slow to respond while a CPU-heavy real
+    GCOV analysis runs concurrently (single-process uvicorn, GIL-bound
+    numpy/rasterio work), which is not a real failure."""
+    last_error: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            last_error = e
+            time.sleep(10)
+    raise RuntimeError(f"{method} {url} failed after {retries} retries: {last_error}")
+
+
 def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, Any]) -> bool:
     loc_id = location["id"]
     print(f"\n=== {location['name']} ({location['country']}) [{loc_id}] ===")
@@ -247,15 +287,14 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
             "polarization": polarization,
             "bounds": {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]},
         }
-        analyze_resp = requests.post(f"{base_url}/api/v2/analyze", json=analyze_body, timeout=60)
-        analyze_resp.raise_for_status()
+        analyze_resp = resilient_request("POST", f"{base_url}/api/v2/analyze", json=analyze_body, timeout=90)
         analyze_data = analyze_resp.json()
         if analyze_data.get("status") == "processing":
             analysis_id = analyze_data["analysis_id"]
             deadline = time.time() + ANALYZE_TIMEOUT_SECONDS
             while time.time() < deadline:
                 time.sleep(POLL_INTERVAL_SECONDS)
-                status = requests.get(f"{base_url}/api/v2/analyze/status/{analysis_id}", timeout=30).json()
+                status = resilient_request("GET", f"{base_url}/api/v2/analyze/status/{analysis_id}", timeout=60).json()
                 if status.get("status") != "processing":
                     analyze_data = status
                     break
@@ -268,9 +307,7 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
 
         print("  Computing real infrastructure impact (best-effort)...")
         try:
-            impact_resp = requests.post(f"{base_url}/api/v2/analyze/{analysis_id}/impact", timeout=60)
-            impact_resp.raise_for_status()
-            impact_data = impact_resp.json()
+            impact_data = resilient_request("POST", f"{base_url}/api/v2/analyze/{analysis_id}/impact", timeout=90).json()
             if impact_data.get("status") == "processing":
                 deadline = time.time() + IMPACT_TIMEOUT_SECONDS
                 while time.time() < deadline:
