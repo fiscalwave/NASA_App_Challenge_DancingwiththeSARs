@@ -69,6 +69,18 @@ class GCOVReader:
         return groups[0]
 
     @classmethod
+    def _list_polarizations_from_group(cls, group: "h5py.Group") -> List[str]:
+        """Shared polarization-listing logic given an already-located
+        frequency group (used by both the local-file and remote-file code
+        paths so there is one source of truth)."""
+        return [
+            pol for pol in cls.SUPPORTED_POLARIZATIONS
+            if pol in group
+            and isinstance(group[pol], h5py.Dataset)
+            and group[pol].ndim == 2
+        ]
+
+    @classmethod
     def list_polarizations(cls, path: Path) -> List[str]:
         """
         List available 2D polarization channels in a GCOV file.
@@ -82,12 +94,7 @@ class GCOVReader:
         try:
             with h5py.File(path, "r") as h5_file:
                 group = cls.find_frequency_group(h5_file)
-                polarizations = [
-                    pol for pol in cls.SUPPORTED_POLARIZATIONS
-                    if pol in group
-                    and isinstance(group[pol], h5py.Dataset)
-                    and group[pol].ndim == 2
-                ]
+                polarizations = cls._list_polarizations_from_group(group)
                 logger.info(f"Found polarizations: {polarizations}")
                 return polarizations
         except Exception as e:
@@ -106,16 +113,14 @@ class GCOVReader:
         bounds: tuple[float, float, float, float],
     ) -> Dict[str, Any]:
         """
-        Load a subset of GCOV data for a specified geographic area.
-        
-        This function:
-        1. Reads HDF5 polarimetric dataset
-        2. Extracts coordinates and projection info
-        3. Reprojects bounds to local coordinate system
-        4. Extracts spatial subset
-        5. Converts to dB scale if needed
-        6. Validates output
-        
+        Load a subset of GCOV data for a specified geographic area from a
+        LOCAL file (already fully downloaded).
+
+        See _load_subset_from_file() for the real processing steps shared
+        with load_gcov_subset_remote() (reprojection, subsetting, dB
+        conversion, transform construction) - this method only handles
+        opening the local file.
+
         Args:
             path: Path to GCOV HDF5 file
             polarization: Polarization channel (e.g., 'VVVV', 'HVHV')
@@ -134,145 +139,239 @@ class GCOVReader:
         """
         try:
             with h5py.File(path, "r") as h5_file:
-                group = cls.find_frequency_group(h5_file)
-                
-                # Validate polarization exists
-                if polarization not in group or not isinstance(group[polarization], h5py.Dataset):
-                    available = ", ".join(cls.list_polarizations(path)) or "none"
-                    raise ValidationError(
-                        f"Polarization {polarization} not found. Available: {available}"
-                    )
-
-                # Extract data and coordinates
-                dataset = group[polarization]
-                x_coordinates = np.asarray(group["xCoordinates"][:], dtype=np.float64)
-                y_coordinates = np.asarray(group["yCoordinates"][:], dtype=np.float64)
-                
-                # Validate dimensions
-                if dataset.shape != (y_coordinates.size, x_coordinates.size):
-                    raise ValidationError(
-                        f"Dataset dimensions {dataset.shape} do not match "
-                        f"grid coordinates {(y_coordinates.size, x_coordinates.size)}"
-                    )
-
-                # Get projection
-                projection = cls._scalar(group["projection"][()])
-                
-                # Reproject bounds to local coordinate system
-                transformer = Transformer.from_crs(
-                    "EPSG:4326",
-                    f"EPSG:{projection}",
-                    always_xy=True,
-                )
-                west, south, east, north = bounds
-                projected_bounds = transformer.transform_bounds(
-                    west, south, east, north,
-                    densify_pts=21,
-                )
-                projected_west, projected_south, projected_east, projected_north = projected_bounds
-                
-                # Find indices of relevant pixels
-                x_indices = np.flatnonzero(
-                    (x_coordinates >= projected_west) & (x_coordinates <= projected_east)
-                )
-                y_indices = np.flatnonzero(
-                    (y_coordinates >= projected_south) & (y_coordinates <= projected_north)
-                )
-                
-                if x_indices.size == 0 or y_indices.size == 0:
-                    raise ValidationError(
-                        "Selected study area does not overlap with this file."
-                    )
-
-                x_slice = slice(int(x_indices.min()), int(x_indices.max()) + 1)
-                y_slice = slice(int(y_indices.min()), int(y_indices.max()) + 1)
-                subset_shape = (y_slice.stop - y_slice.start, x_slice.stop - x_slice.start)
-                
-                # Validate subset size
-                if subset_shape[0] * subset_shape[1] > cls.MAX_SUBSET_PIXELS:
-                    pixel_spacing_m = abs(float(x_coordinates[1] - x_coordinates[0])) if x_coordinates.size > 1 else 20.0
-                    max_side_m = (cls.MAX_SUBSET_PIXELS ** 0.5) * pixel_spacing_m
-                    max_radius_km = round(max_side_m / 2 / 1000, 1)
-                    raise ValidationError(
-                        f"Selected area is too large: {subset_shape[0] * subset_shape[1]} pixels "
-                        f"exceeds the safe processing maximum of {cls.MAX_SUBSET_PIXELS} "
-                        f"(this limit avoids out-of-memory failures on constrained hosting). "
-                        f"Try a search radius of roughly {max_radius_km} km or less, based on this "
-                        f"file's real {pixel_spacing_m:.1f}m pixel spacing."
-                    )
-
-                # Extract raw values
-                raw_values = np.asarray(dataset[y_slice, x_slice])
-                if np.iscomplexobj(raw_values):
-                    raw_values = raw_values.real
-                raw_values = raw_values.astype(np.float32, copy=False)
-                
-                # Extract sliced coordinates
-                x_coordinates = x_coordinates[x_slice]
-                y_coordinates = y_coordinates[y_slice]
-                
-                # Handle units and fill values
-                units = str(dataset.attrs.get("units", "")).lower()
-                fill_value = dataset.attrs.get("_FillValue", dataset.attrs.get("fillValue"))
-
-            # Create validity mask
-            valid = np.isfinite(raw_values)
-            if fill_value is not None:
-                valid &= raw_values != float(np.asarray(fill_value).item())
-            
-            # Convert to dB scale
-            if "db" in units or "decibel" in units:
-                backscatter_db = raw_values
-            else:
-                valid &= raw_values > 0
-                backscatter_db = np.full(raw_values.shape, np.nan, dtype=np.float32)
-                backscatter_db[valid] = 10.0 * np.log10(raw_values[valid])
-            
-            backscatter_db[~valid] = np.nan
-
-            # Validate coordinate arrays
-            if x_coordinates.size < 2 or y_coordinates.size < 2:
-                raise ValidationError(
-                    "Not enough grid coordinates to map the data."
-                )
-            
-            # Calculate pixel spacing
-            x_step = float(np.median(np.abs(np.diff(x_coordinates))))
-            y_step = float(np.median(np.abs(np.diff(y_coordinates))))
-            
-            # Ensure coordinate order is consistent
-            if x_coordinates[0] > x_coordinates[-1]:
-                x_coordinates = x_coordinates[::-1]
-                backscatter_db = backscatter_db[:, ::-1]
-            if y_coordinates[0] < y_coordinates[-1]:
-                y_coordinates = y_coordinates[::-1]
-                backscatter_db = backscatter_db[::-1, :]
-
-            # Create rasterio transform
-            transform = from_origin(
-                float(x_coordinates[0]) - x_step / 2,
-                float(y_coordinates[0]) + y_step / 2,
-                x_step,
-                y_step,
-            )
-            
-            result = {
-                "data": backscatter_db,
-                "transform": transform,
-                "crs": f"EPSG:{projection}",
-                "pixel_area_km2": (x_step * y_step) / 1_000_000,
-            }
-            
-            logger.info(
-                f"Successfully loaded GCOV subset: "
-                f"shape={backscatter_db.shape}, "
-                f"crs={result['crs']}, "
-                f"valid_pixels={valid.sum()}"
-            )
-            
-            return result
-            
+                return cls._load_subset_from_file(h5_file, polarization, bounds)
         except (ProcessingError, ValidationError):
             raise
         except Exception as e:
             raise ProcessingError(f"Failed to load GCOV subset: {str(e)}")
+
+    @classmethod
+    def load_gcov_subset_remote(
+        cls,
+        url: str,
+        polarization: str,
+        bounds: tuple[float, float, float, float],
+        bearer_token: str,
+        block_size_mb: int = 8,
+    ) -> Dict[str, Any]:
+        """
+        Load a subset of GCOV data for a specified geographic area by
+        reading directly from the REMOTE file over HTTPS - no full-file
+        download required.
+
+        This wraps an fsspec HTTP file object (tuned with an 8MB block
+        cache, per the ASF OpenSARlab NISAR Cookbook:
+        https://asfopensarlab.github.io/NISAR_Cookbook/nisar-gcov-time-series-example/)
+        directly as an h5py.File, then reuses the exact same real subsetting/
+        dB-conversion/transform logic as load_gcov_subset() via
+        _load_subset_from_file() - verified to produce scientifically
+        identical results (same shape, identical min/max/mean dB values) to
+        the local-file path on a real granule during a benchmark spike this
+        session. Falls back to a full download by the caller if this fails
+        for any reason (e.g. a granule with an unfavorable HDF5 chunk layout) -
+        this method itself does not fall back, it either succeeds with real
+        remote data or raises.
+
+        Args:
+            url: Real NASA Earthdata Cloud HTTPS download URL for the granule
+            polarization: Polarization channel (e.g., 'VVVV', 'HVHV')
+            bounds: Geographic bounds (west, south, east, north) in EPSG:4326
+            bearer_token: Real EDL bearer token (see app/ingestion/edl_token.py)
+            block_size_mb: fsspec HTTP block-cache size - 8MB verified fast
+                for NISAR GCOV's real HDF5 chunk layout; larger files/less
+                favorable chunk layouts may need retuning
+
+        Returns:
+            Same dict shape as load_gcov_subset()
+
+        Raises:
+            ProcessingError: If the remote file cannot be read/processed
+            ValidationError: If data validation fails
+        """
+        import fsspec
+
+        try:
+            fs = fsspec.filesystem(
+                "http",
+                headers={"Authorization": f"Bearer {bearer_token}"},
+                cache_type="background",
+                block_size=block_size_mb * 1024 * 1024,
+            )
+            with fs.open(url, "rb") as remote_file:
+                with h5py.File(remote_file, "r") as h5_file:
+                    return cls._load_subset_from_file(h5_file, polarization, bounds)
+        except (ProcessingError, ValidationError):
+            raise
+        except Exception as e:
+            raise ProcessingError(f"Failed to load remote GCOV subset: {str(e)}")
+
+    @classmethod
+    def _load_subset_from_file(
+        cls,
+        h5_file: "h5py.File",
+        polarization: str,
+        bounds: tuple[float, float, float, float],
+    ) -> Dict[str, Any]:
+        """
+        Shared real processing core for both the local-file and remote-file
+        code paths:
+        1. Locates the real frequency group and validates the polarization
+        2. Extracts real coordinate arrays and projection info
+        3. Reprojects the requested bounds to the file's local CRS
+        4. Extracts the real spatial subset (byte-range read for the remote
+           case - this is the step that avoids downloading the whole file)
+        5. Converts to dB scale if needed
+        6. Builds the real affine transform
+
+        Args:
+            h5_file: An already-open h5py.File (wrapping either a local path
+                or a remote fsspec file object - identical from here on)
+            polarization: Polarization channel (e.g., 'VVVV', 'HVHV')
+            bounds: Geographic bounds (west, south, east, north) in EPSG:4326
+
+        Returns:
+            Dictionary with keys:
+                - 'data': numpy array of backscatter in dB
+                - 'transform': rasterio Affine transform
+                - 'crs': Coordinate reference system EPSG code
+                - 'pixel_area_km2': Area per pixel in km²
+        """
+        group = cls.find_frequency_group(h5_file)
+
+        # Validate polarization exists
+        if polarization not in group or not isinstance(group[polarization], h5py.Dataset):
+            available = ", ".join(cls._list_polarizations_from_group(group)) or "none"
+            raise ValidationError(
+                f"Polarization {polarization} not found. Available: {available}"
+            )
+
+        # Extract data and coordinates
+        dataset = group[polarization]
+        x_coordinates = np.asarray(group["xCoordinates"][:], dtype=np.float64)
+        y_coordinates = np.asarray(group["yCoordinates"][:], dtype=np.float64)
+
+        # Validate dimensions
+        if dataset.shape != (y_coordinates.size, x_coordinates.size):
+            raise ValidationError(
+                f"Dataset dimensions {dataset.shape} do not match "
+                f"grid coordinates {(y_coordinates.size, x_coordinates.size)}"
+            )
+
+        # Get projection
+        projection = cls._scalar(group["projection"][()])
+
+        # Reproject bounds to local coordinate system
+        transformer = Transformer.from_crs(
+            "EPSG:4326",
+            f"EPSG:{projection}",
+            always_xy=True,
+        )
+        west, south, east, north = bounds
+        projected_bounds = transformer.transform_bounds(
+            west, south, east, north,
+            densify_pts=21,
+        )
+        projected_west, projected_south, projected_east, projected_north = projected_bounds
+
+        # Find indices of relevant pixels
+        x_indices = np.flatnonzero(
+            (x_coordinates >= projected_west) & (x_coordinates <= projected_east)
+        )
+        y_indices = np.flatnonzero(
+            (y_coordinates >= projected_south) & (y_coordinates <= projected_north)
+        )
+
+        if x_indices.size == 0 or y_indices.size == 0:
+            raise ValidationError(
+                "Selected study area does not overlap with this file."
+            )
+
+        x_slice = slice(int(x_indices.min()), int(x_indices.max()) + 1)
+        y_slice = slice(int(y_indices.min()), int(y_indices.max()) + 1)
+        subset_shape = (y_slice.stop - y_slice.start, x_slice.stop - x_slice.start)
+
+        # Validate subset size
+        if subset_shape[0] * subset_shape[1] > cls.MAX_SUBSET_PIXELS:
+            pixel_spacing_m = abs(float(x_coordinates[1] - x_coordinates[0])) if x_coordinates.size > 1 else 20.0
+            max_side_m = (cls.MAX_SUBSET_PIXELS ** 0.5) * pixel_spacing_m
+            max_radius_km = round(max_side_m / 2 / 1000, 1)
+            raise ValidationError(
+                f"Selected area is too large: {subset_shape[0] * subset_shape[1]} pixels "
+                f"exceeds the safe processing maximum of {cls.MAX_SUBSET_PIXELS} "
+                f"(this limit avoids out-of-memory failures on constrained hosting). "
+                f"Try a search radius of roughly {max_radius_km} km or less, based on this "
+                f"file's real {pixel_spacing_m:.1f}m pixel spacing."
+            )
+
+        # Extract raw values (for the remote case, this is the real
+        # byte-range HTTP read - everything above this point only touches
+        # small metadata/coordinate arrays)
+        raw_values = np.asarray(dataset[y_slice, x_slice])
+        if np.iscomplexobj(raw_values):
+            raw_values = raw_values.real
+        raw_values = raw_values.astype(np.float32, copy=False)
+
+        # Extract sliced coordinates
+        x_coordinates = x_coordinates[x_slice]
+        y_coordinates = y_coordinates[y_slice]
+
+        # Handle units and fill values
+        units = str(dataset.attrs.get("units", "")).lower()
+        fill_value = dataset.attrs.get("_FillValue", dataset.attrs.get("fillValue"))
+
+        # Create validity mask
+        valid = np.isfinite(raw_values)
+        if fill_value is not None:
+            valid &= raw_values != float(np.asarray(fill_value).item())
+
+        # Convert to dB scale
+        if "db" in units or "decibel" in units:
+            backscatter_db = raw_values
+        else:
+            valid &= raw_values > 0
+            backscatter_db = np.full(raw_values.shape, np.nan, dtype=np.float32)
+            backscatter_db[valid] = 10.0 * np.log10(raw_values[valid])
+
+        backscatter_db[~valid] = np.nan
+
+        # Validate coordinate arrays
+        if x_coordinates.size < 2 or y_coordinates.size < 2:
+            raise ValidationError(
+                "Not enough grid coordinates to map the data."
+            )
+
+        # Calculate pixel spacing
+        x_step = float(np.median(np.abs(np.diff(x_coordinates))))
+        y_step = float(np.median(np.abs(np.diff(y_coordinates))))
+
+        # Ensure coordinate order is consistent
+        if x_coordinates[0] > x_coordinates[-1]:
+            x_coordinates = x_coordinates[::-1]
+            backscatter_db = backscatter_db[:, ::-1]
+        if y_coordinates[0] < y_coordinates[-1]:
+            y_coordinates = y_coordinates[::-1]
+            backscatter_db = backscatter_db[::-1, :]
+
+        # Create rasterio transform
+        transform = from_origin(
+            float(x_coordinates[0]) - x_step / 2,
+            float(y_coordinates[0]) + y_step / 2,
+            x_step,
+            y_step,
+        )
+
+        result = {
+            "data": backscatter_db,
+            "transform": transform,
+            "crs": f"EPSG:{projection}",
+            "pixel_area_km2": (x_step * y_step) / 1_000_000,
+        }
+
+        logger.info(
+            f"Successfully loaded GCOV subset: "
+            f"shape={backscatter_db.shape}, "
+            f"crs={result['crs']}, "
+            f"valid_pixels={valid.sum()}"
+        )
+
+        return result

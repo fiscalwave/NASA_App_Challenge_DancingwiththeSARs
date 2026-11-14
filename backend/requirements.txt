@@ -18,6 +18,14 @@ pyproj==3.7.1
 shapely==2.0.6
 scipy==1.16.0
 
+# Remote HTTPS partial-read support (GCOVReader.load_gcov_subset_remote): lets
+# the analysis path read just the requested AOI directly from a remote NISAR
+# granule over HTTPS instead of downloading the whole multi-GB file first.
+# Neither package depends on numpy, so this does not disturb the numpy==1.26.4
+# pin that h5py/rasterio/pyproj require.
+fsspec==2024.10.0
+aiohttp==3.11.11
+
 # Utilities
 python-dotenv==1.0.1
 

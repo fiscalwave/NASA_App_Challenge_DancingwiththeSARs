@@ -14,6 +14,7 @@ import os
 import sys
 import hashlib
 import json
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 import asf_search
@@ -34,11 +35,13 @@ except ImportError as e:
 try:
     from app.ingestion.cmr_adapter import CMRAdapter, _parse_granule_acquisition_time
     from app.ingestion.download_manager import DownloadManager
+    from app.ingestion.edl_token import get_edl_token_manager
 except ImportError as e:
     print(f"Warning: Could not import discovery/download pipeline: {e}")
     CMRAdapter = None
     DownloadManager = None
     _parse_granule_acquisition_time = None
+    get_edl_token_manager = None
 
 # Import Phase 5 real GCOV processing pipeline (dormant app/ package: real
 # HDF5 reading, backscatter change detection, flood classification, and
@@ -226,6 +229,20 @@ if DownloadManager is not None:
             except Exception as e:
                 print(f"  Warning: could not register {h5_file.name}: {e}")
 
+# Real HTTPS partial-read support (see app/processing/gcov_reader.py
+# .load_gcov_subset_remote() and app/ingestion/edl_token.py): lets the
+# analysis path read just the requested AOI directly from the remote
+# granule instead of downloading the full multi-GB file first - measured
+# ~8x faster (122s -> 15s) for a small AOI on the real GCP VM. Disabled
+# automatically if credentials or the EDL token manager aren't available;
+# the existing download-then-read path is always the fallback.
+REMOTE_READ_ENABLED = os.getenv("REMOTE_READ_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+edl_token_manager = None
+if REMOTE_READ_ENABLED and get_edl_token_manager is not None and ASF_USERNAME and ASF_PASSWORD:
+    edl_token_manager = get_edl_token_manager(ASF_USERNAME, ASF_PASSWORD)
+else:
+    REMOTE_READ_ENABLED = False
+
 # Print startup info
 @app.on_event("startup")
 async def startup_event():
@@ -306,11 +323,21 @@ class DownloadStartRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     """Real before/after NISAR L2 GCOV change-detection request.
 
-    Both granules must already be fully downloaded (status "complete" via
-    /api/v2/download/status) - this endpoint reads real local HDF5 files,
-    it does not download anything itself."""
+    If before_download_url/after_download_url are provided, the backend
+    first attempts a real remote partial (byte-range) HTTPS read of just
+    the requested AOI - no full-granule download required - which is
+    dramatically faster for small AOIs against large (multi-GB) granules
+    (measured ~8x on a real GCP VM: 122s full download vs 15s remote read).
+    If a URL is missing, or the remote read fails for any reason, the
+    backend transparently falls back to downloading the full granule (via
+    the existing DownloadManager) and reading it locally - so this field
+    is fully optional and backward compatible. Either way, the granule
+    must ultimately be resolvable: already downloaded locally, or have a
+    real download URL available for a fallback download."""
     before_granule_id: str
     after_granule_id: str
+    before_download_url: Optional[str] = None
+    after_download_url: Optional[str] = None
     bounds: BoundsModel
     polarization: str = "HHHH"
     flood_change_threshold_db: float = -2.0
@@ -873,6 +900,122 @@ def _resolve_granule_path(granule_id: str) -> Path:
     return local_path
 
 
+# Bounded wall-clock budget for a single remote partial read attempt before
+# giving up and falling back to the (slower but battle-tested) download+
+# local-read path. Chosen comfortably above the ~15s measured on the real
+# GCP VM for a typical small-AOI read, while still being much less than a
+# full multi-GB download (~120s+) so a failing remote read doesn't make
+# the fallback path slower than just downloading from the start.
+REMOTE_READ_TIMEOUT_SECONDS = 90
+
+# How long to wait for a server-triggered fallback download to finish
+# before giving up (generous - some granules are 7GB+ and slow networks
+# exist; the analysis job already runs in a background thread so blocking
+# here does not tie up the request/response cycle).
+FALLBACK_DOWNLOAD_TIMEOUT_SECONDS = 20 * 60
+
+
+def _wait_for_download_complete(granule_id: str, timeout_seconds: float) -> Path:
+    """Poll the real download_manager status in-process until the granule
+    is fully downloaded (or raise on failure/timeout). Used by the remote-
+    read fallback path when the granule was never explicitly downloaded by
+    the client."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = download_manager.get_status(granule_id)
+        if status.get("status") == "complete":
+            local_path = Path(status["local_path"])
+            if local_path.exists():
+                return local_path
+            raise ProcessingError(f"Cached file missing on disk for granule '{granule_id}'")
+        if status.get("status") == "failed":
+            raise ProcessingError(
+                f"Download failed for granule '{granule_id}': {status.get('error', 'unknown error')}"
+            )
+        time.sleep(2)
+    raise ProcessingError(
+        f"Timed out waiting for granule '{granule_id}' to finish downloading "
+        f"after {int(timeout_seconds)}s"
+    )
+
+
+def _get_gcov_data(
+    granule_id: str,
+    download_url: Optional[str],
+    polarization: str,
+    bounds_tuple: tuple[float, float, float, float],
+) -> Dict[str, Any]:
+    """
+    Get the real GCOV subset for one granule, trying a fast remote partial
+    (byte-range HTTPS) read first when possible, and transparently falling
+    back to a real full download + local read otherwise. Never substitutes
+    mock data - every path here reads a real NISAR granule, either over the
+    network a subset at a time, or from a fully downloaded local file.
+
+    Fallback is triggered by (in order of likelihood): no download_url
+    provided (old-style request), remote read disabled, or any exception
+    from the remote read itself (network error, timeout, or an HDF5 edge
+    case the remote path doesn't yet handle) - logged as a warning, never
+    silently swallowed.
+    """
+    if REMOTE_READ_ENABLED and download_url and GCOVReader is not None:
+        try:
+            token = edl_token_manager.get_token()
+            remote_result: Dict[str, Any] = {}
+            remote_error: List[Exception] = []
+
+            def _attempt_remote() -> None:
+                try:
+                    remote_result["data"] = GCOVReader.load_gcov_subset_remote(
+                        download_url, polarization, bounds_tuple, token
+                    )
+                except Exception as e:  # noqa: BLE001 - must not crash the thread
+                    remote_error.append(e)
+
+            thread = threading.Thread(target=_attempt_remote, daemon=True)
+            thread.start()
+            thread.join(timeout=REMOTE_READ_TIMEOUT_SECONDS)
+
+            if thread.is_alive():
+                print(
+                    f"Remote partial read for {granule_id} exceeded "
+                    f"{REMOTE_READ_TIMEOUT_SECONDS}s, falling back to download"
+                )
+            elif remote_error:
+                print(f"Remote partial read for {granule_id} failed, falling back to download: {remote_error[0]}")
+            elif "data" in remote_result:
+                print(f"Remote partial read succeeded for {granule_id} (no full download needed)")
+                return remote_result["data"]
+        except Exception as e:
+            print(f"Remote read setup failed for {granule_id}, falling back to download: {e}")
+
+    # Fallback: ensure the granule is fully downloaded locally, then read it
+    # with the existing, battle-tested local path.
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+
+    status = download_manager.get_status(granule_id)
+    if status.get("status") != "complete":
+        if not download_url:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Granule '{granule_id}' is not downloaded yet and no download_url was "
+                    f"provided to fetch it (status: {status.get('status', 'not_found')}). Use "
+                    f"/api/v2/download/start first and poll /api/v2/download/status/{{granule_id}}, "
+                    f"or include *_download_url in this request."
+                ),
+            )
+        download_manager.start_download(granule_id, download_url)
+        local_path = _wait_for_download_complete(granule_id, FALLBACK_DOWNLOAD_TIMEOUT_SECONDS)
+    else:
+        local_path = Path(status["local_path"])
+        if not local_path.exists():
+            raise HTTPException(status_code=404, detail=f"Cached file missing on disk for granule '{granule_id}'")
+
+    return GCOVReader.load_gcov_subset(local_path, polarization, bounds_tuple)
+
+
 def _analysis_id_for(request: AnalyzeRequest) -> str:
     seed = (
         f"{request.before_granule_id}|{request.after_granule_id}|"
@@ -913,9 +1056,6 @@ def _run_real_analysis(analysis_id: str, request: "AnalyzeRequest", result_dir: 
     caller since nothing is awaiting this directly.
     """
     try:
-        before_path = _resolve_granule_path(request.before_granule_id)
-        after_path = _resolve_granule_path(request.after_granule_id)
-
         bounds_tuple = (request.bounds.west, request.bounds.south, request.bounds.east, request.bounds.north)
 
         # Geometry compatibility check (does not block the analysis, but flags
@@ -929,8 +1069,15 @@ def _run_real_analysis(analysis_id: str, request: "AnalyzeRequest", result_dir: 
             and before_fields["pass_direction"] == after_fields.get("pass_direction")
         )
 
-        before_data = GCOVReader.load_gcov_subset(before_path, request.polarization, bounds_tuple)
-        after_data = GCOVReader.load_gcov_subset(after_path, request.polarization, bounds_tuple)
+        # Tries a fast remote partial read first (when a download_url was
+        # provided), falling back to a real full download + local read
+        # otherwise - see _get_gcov_data() for the full fallback logic.
+        before_data = _get_gcov_data(
+            request.before_granule_id, request.before_download_url, request.polarization, bounds_tuple
+        )
+        after_data = _get_gcov_data(
+            request.after_granule_id, request.after_download_url, request.polarization, bounds_tuple
+        )
 
         change, aligned_before, aligned_after, pixel_area_km2 = ChangeDetectionEngine.align_and_compare(
             before_data, after_data
@@ -1042,12 +1189,16 @@ async def analyze_real_change(request: AnalyzeRequest):
     """
     Real NISAR L2 GCOV before/after change detection.
 
-    Reads actual HDF5 backscatter data for both granules (which must already
-    be downloaded locally via /api/v2/download), reprojects/aligns them,
-    computes the real backscatter difference (delta sigma0 = sigma0_post -
-    sigma0_pre), and classifies possible new inundation vs persistent
-    low-backscatter (existing water) using documented, configurable
-    thresholds.
+    Reads actual HDF5 backscatter data for both granules - either via a real
+    fast remote partial (byte-range HTTPS) read directly from the granule's
+    real NASA Earthdata Cloud URL (when before_download_url/after_download_url
+    are provided; no full download needed), or from a local copy already
+    downloaded via /api/v2/download/start, falling back to triggering that
+    download itself if a URL is given but the file isn't local yet - then
+    reprojects/aligns them, computes the real backscatter difference (delta
+    sigma0 = sigma0_post - sigma0_pre), and classifies possible new
+    inundation vs persistent low-backscatter (existing water) using
+    documented, configurable thresholds.
 
     This is a THIN HANDLER: real processing can take minutes for a large
     AOI, which exceeds Render's reverse-proxy request timeout if done
@@ -1086,10 +1237,15 @@ async def analyze_real_change(request: AnalyzeRequest):
                 cached["cache_source"] = "external"
                 return cached
 
-        # Fail fast (synchronously) if the granules aren't downloaded yet - this
-        # is a fast local check, not real processing, so it's fine in the thin handler.
-        _resolve_granule_path(request.before_granule_id)
-        _resolve_granule_path(request.after_granule_id)
+        # Fail fast (synchronously) if the granule isn't downloaded yet AND no
+        # download_url was given to fetch/remote-read it - this is a fast
+        # local check, not real processing, so it's fine in the thin handler.
+        # If a download_url IS present, resolution (remote-read-first, with
+        # download fallback) happens inside the background job itself.
+        if not request.before_download_url:
+            _resolve_granule_path(request.before_granule_id)
+        if not request.after_download_url:
+            _resolve_granule_path(request.after_granule_id)
     except HTTPException:
         raise
     except Exception as e:

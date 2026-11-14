@@ -1686,64 +1686,6 @@
             // table, which gets replaced once real results are populated.
         }
 
-        // Start both before/after downloads in parallel (the backend's
-        // DownloadManager already supports 2 concurrent downloads via its
-        // thread pool - there's no reason to wait for one before starting
-        // the other). Polls real, byte-accurate combined progress - never a
-        // fabricated/simulated progress bar. Stops silently if a newer
-        // search/reset has superseded this one.
-        async function downloadGranulesInParallel(beforeMeta, afterMeta, generation) {
-            const starts = await Promise.all([beforeMeta, afterMeta].map(async (meta) => {
-                const resp = await fetch('/api/v2/download/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        granule_id: meta.granule_id,
-                        download_url: meta.download_url,
-                        expected_size_mb: meta.size_mb
-                    })
-                });
-                const data = await resp.json();
-                if (!resp.ok) {
-                    throw new Error(data.detail || `Could not start download for ${meta.granule_id}`);
-                }
-                return { meta, status: data };
-            }));
-
-            let elapsedSeconds = 0;
-            while (true) {
-                if (generation !== searchGeneration) return; // superseded
-
-                for (const s of starts) {
-                    if (s.status.status === 'error' || s.status.status === 'failed') {
-                        throw new Error(`Download failed for ${s.meta.granule_id}: ${s.status.error || 'unknown error'}`);
-                    }
-                }
-                if (starts.every(s => s.status.status === 'complete')) return;
-
-                const progressParts = starts.map(s => {
-                    if (s.status.status === 'complete') return 'done';
-                    const downloadedMb = (s.status.downloaded_bytes || 0) / 1e6;
-                    const totalMb = (s.status.total_bytes || s.meta.size_mb * 1e6) / 1e6;
-                    const pct = totalMb > 0 ? Math.round(100 * downloadedMb / totalMb) : 0;
-                    return `${pct}%`;
-                });
-                showGlobalStatus(
-                    `Downloading real before/after granules in parallel: before ${progressParts[0]}, after ${progressParts[1]} ` +
-                    `(${elapsedSeconds}s elapsed) - real NASA Earthdata download in progress...`
-                );
-
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                elapsedSeconds += 2;
-
-                await Promise.all(starts.map(async (s) => {
-                    if (s.status.status === 'complete') return;
-                    const resp = await fetch(`/api/v2/download/status/${encodeURIComponent(s.meta.granule_id)}`);
-                    s.status = await resp.json();
-                }));
-            }
-        }
-
         // Start a long-running real backend job (change detection, or
         // OpenStreetMap infrastructure impact) and poll its status until
         // done, instead of waiting on one single blocking HTTP request.
@@ -1895,10 +1837,10 @@
 
             const polarization = document.getElementById('polarizationSelect').value;
 
-            await downloadGranulesInParallel(beforeMeta, afterMeta, generation);
-            if (generation !== searchGeneration) return;
-
-            showGlobalStatus('Running real NISAR backscatter change detection...');
+            showGlobalStatus(
+                'Running real NISAR backscatter change detection (tries a fast remote partial ' +
+                'read of just this area first, before falling back to a full granule download)...'
+            );
             const summary = await startAndPollJob(
                 fetch('/api/v2/analyze', {
                     method: 'POST',
@@ -1906,6 +1848,8 @@
                     body: JSON.stringify({
                         before_granule_id: pair.before,
                         after_granule_id: pair.after,
+                        before_download_url: beforeMeta.download_url,
+                        after_download_url: afterMeta.download_url,
                         polarization,
                         bounds: { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north }
                     })
