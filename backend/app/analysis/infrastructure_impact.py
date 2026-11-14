@@ -5,15 +5,18 @@ Takes the REAL possible-flood polygon produced by Phase 5's change-detection
 pipeline (ChangeDetectionEngine + GeoJSONExporter) and performs genuine
 spatial intersection/proximity analysis against REAL OpenStreetMap
 infrastructure data (roads, hospitals, schools, settlements, power plants)
-fetched live via the Overpass API.
+fetched live via the Overpass API, with a real Geoapify Places API fallback
+for every category except roads when every Overpass mirror has failed.
 
 No fabricated infrastructure counts, distances, or statistics are produced.
-If the Overpass query fails or returns no features, that is reported
-explicitly rather than substituted with estimates.
+If the Overpass query (and Geoapify fallback, where available) both fail,
+or return no features, that is reported explicitly rather than substituted
+with estimates.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -71,6 +74,88 @@ OVERPASS_HEADERS = {
     "User-Agent": "NISAR-Flood-Wetland-Mapping/1.0 (NASA Space Apps Challenge disaster-response prototype)"
 }
 
+# Real fallback POI source for when every Overpass mirror has failed
+# (verified 2026-11-14: a genuine, widespread public Overpass overload, not
+# specific to this app - see OVERPASS_ENDPOINTS comment above). Geoapify's
+# Places API serves the same underlying OpenStreetMap data, but from
+# Geoapify's own production infrastructure rather than volunteer-run public
+# Overpass mirrors - free tier, 3,000 requests/day, no credit card. Verified
+# directly (2026-11-14) to return real results for all four of these
+# categories. There is no equivalent fallback for "roads": no free provider
+# anywhere exposes a bulk road-network geometry API outside the OSM/Overpass
+# ecosystem itself (this includes Google - see TROUBLESHOOTING.md).
+#
+# Read lazily (a function, not a module-level constant) because
+# app_real_api.py imports this module BEFORE it calls load_dotenv() (the
+# same reason it has to hand-parse ASF_USERNAME/ASF_PASSWORD out of .env
+# itself) - a module-level os.getenv() here would always see an empty
+# string, even with a real key configured.
+def _geoapify_api_key() -> str:
+    return os.getenv("GEOAPIFY_API_KEY", "").strip()
+
+
+GEOAPIFY_CATEGORIES: Dict[str, str] = {
+    "hospitals": "healthcare.hospital",
+    "schools": "education.school",
+    "settlements": "populated_place",
+    "power_plants": "power.plant,power.generator",
+}
+GEOAPIFY_PAGE_SIZE = 200
+GEOAPIFY_MAX_PAGES = 3  # up to 600 real features - 3 credits/call, cheap within the 3,000/day free budget
+
+
+def _query_geoapify(category: str, bbox: Tuple[float, float, float, float], timeout: int = 20) -> Dict[str, Any]:
+    """
+    Real fallback query against Geoapify's Places API for one infrastructure
+    category, used only when every configured Overpass mirror has already
+    failed. Converts Geoapify's GeoJSON response into the exact same
+    {"elements": [...]} shape Overpass returns, so every downstream
+    consumer (impact analysis, map rendering) works unchanged regardless of
+    which real source actually answered.
+
+    Raises DataIngestionError if no API key is configured, the category has
+    no Geoapify mapping (e.g. "roads"), or the request itself fails - never
+    fabricates data.
+    """
+    geoapify_category = GEOAPIFY_CATEGORIES.get(category)
+    api_key = _geoapify_api_key()
+    if not api_key or not geoapify_category:
+        raise DataIngestionError(f"No Geoapify fallback configured for category '{category}'")
+
+    west, south, east, north = bbox
+    elements: List[Dict[str, Any]] = []
+    for page in range(GEOAPIFY_MAX_PAGES):
+        params = {
+            "categories": geoapify_category,
+            "filter": f"rect:{west},{south},{east},{north}",
+            "limit": GEOAPIFY_PAGE_SIZE,
+            "offset": page * GEOAPIFY_PAGE_SIZE,
+            "apiKey": api_key,
+        }
+        try:
+            resp = requests.get("https://api.geoapify.com/v2/places", params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            raise DataIngestionError(f"Geoapify fallback failed: {e}")
+
+        features = data.get("features", [])
+        for feature in features:
+            coords = (feature.get("geometry") or {}).get("coordinates")
+            if not coords or len(coords) < 2:
+                continue
+            elements.append({
+                "type": "node",
+                "lon": coords[0],
+                "lat": coords[1],
+                "tags": {"name": (feature.get("properties") or {}).get("name", "")},
+            })
+        if len(features) < GEOAPIFY_PAGE_SIZE:
+            break
+
+    logger.info(f"Geoapify fallback returned {len(elements)} real feature(s) for category '{category}'")
+    return {"elements": elements}
+
 
 def _query_overpass(ql_body: str, bbox: Tuple[float, float, float, float], timeout: int = 25) -> Dict[str, Any]:
     """Query Overpass with mirror failover and a bounded timeout per mirror.
@@ -94,14 +179,17 @@ def _query_overpass(ql_body: str, bbox: Tuple[float, float, float, float], timeo
 def query_infrastructure_category(category: str, bbox: Tuple[float, float, float, float]) -> Dict[str, Any]:
     """
     Query real OpenStreetMap features for one infrastructure category over
-    an AOI, with the same mirror-failover logic used by
-    compute_infrastructure_impact() - exposed as a public entry point so a
-    single-layer request (e.g. the frontend's "Infrastructure Layers"
-    toggles) can reuse the exact same server-side Overpass querying code,
-    instead of querying Overpass directly from the browser (which cannot
-    send a custom User-Agent header - a forbidden header in the Fetch spec -
-    so those requests don't comply with Overpass's own usage policy of
-    identifying the calling application).
+    an AOI: tries Overpass first (with its own 3-mirror failover), then
+    falls back to Geoapify's Places API (see _query_geoapify()) if Overpass
+    fails entirely AND a Geoapify fallback exists for this category AND
+    GEOAPIFY_API_KEY is configured - otherwise the original Overpass error
+    is raised as-is. Exposed as a public entry point so a single-layer
+    request (e.g. the frontend's "Infrastructure Layers" toggles) can reuse
+    the exact same server-side querying code, instead of querying Overpass
+    directly from the browser (which cannot send a custom User-Agent
+    header - a forbidden header in the Fetch spec - so those requests
+    don't comply with Overpass's own usage policy of identifying the
+    calling application).
 
     Args:
         category: one of INFRA_QUERIES's keys (roads, hospitals, schools,
@@ -109,15 +197,31 @@ def query_infrastructure_category(category: str, bbox: Tuple[float, float, float
         bbox: (west, south, east, north) in EPSG:4326
 
     Returns:
-        The raw Overpass JSON response ({"elements": [...]})
+        The raw Overpass-shaped JSON response ({"elements": [...]}),
+        regardless of which real source (Overpass or Geoapify) answered.
 
     Raises:
         ValueError: unknown category
-        DataIngestionError: every mirror failed (never returns fabricated data)
+        DataIngestionError: every real source failed (Overpass, and Geoapify
+            if one was attempted) - never returns fabricated data
     """
     if category not in INFRA_QUERIES:
         raise ValueError(f"Unknown infrastructure category '{category}'. Valid: {sorted(INFRA_QUERIES)}")
-    return _query_overpass(INFRA_QUERIES[category]["ql"], bbox)
+
+    try:
+        return _query_overpass(INFRA_QUERIES[category]["ql"], bbox)
+    except DataIngestionError as overpass_error:
+        if category not in GEOAPIFY_CATEGORIES or not _geoapify_api_key():
+            raise
+        logger.warning(
+            f"Overpass failed for category '{category}' ({overpass_error}); trying real Geoapify fallback"
+        )
+        try:
+            return _query_geoapify(category, bbox)
+        except DataIngestionError as geoapify_error:
+            raise DataIngestionError(
+                f"Overpass failed ({overpass_error}) and the Geoapify fallback also failed ({geoapify_error})"
+            )
 
 
 def _elements_to_geometries(elements: List[Dict[str, Any]], geometry_kind: str):
@@ -181,16 +285,17 @@ def compute_infrastructure_impact(
     to_proj = _build_reprojector("EPSG:4326", analysis_crs)
     flood_union_proj = to_proj(flood_union_4326)
 
-    # Fetch all categories concurrently. Each category's mirror-failover chain
-    # (up to 3 mirrors x 25s timeout) is network-bound and independent of the
-    # others, so running them sequentially would multiply worst-case latency
-    # by the number of categories; running them in parallel bounds the real
-    # wall-clock wait to that of the single slowest category.
+    # Fetch all categories concurrently. Each category's real-source chain
+    # (Overpass mirror failover, then the Geoapify fallback if configured)
+    # is network-bound and independent of the others, so running them
+    # sequentially would multiply worst-case latency by the number of
+    # categories; running them in parallel bounds the real wall-clock wait
+    # to that of the single slowest category.
     import concurrent.futures
 
     def _fetch(category: str, spec: Dict[str, str]):
         try:
-            raw = _query_overpass(spec["ql"], bbox)
+            raw = query_infrastructure_category(category, bbox)
             return category, "ok", raw.get("elements", [])
         except DataIngestionError as e:
             return category, "error", str(e)

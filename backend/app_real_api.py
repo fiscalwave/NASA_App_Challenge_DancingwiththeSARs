@@ -737,6 +737,43 @@ async def diagnose_external_cache():
     return result
 
 
+@app.get("/api/v2/diagnostics/geoapify", tags=["System"])
+async def diagnose_geoapify():
+    """
+    Safely verify whether the optional Geoapify Places API fallback is
+    configured - without exposing the key value. This is purely a
+    reliability improvement (see app/analysis/infrastructure_impact.py)
+    for when every real Overpass mirror has failed; the "Infrastructure
+    Layers" and "Affected Area" features work correctly (reporting the
+    real, honest error) even if this reports disabled.
+    """
+    import requests as _requests
+    from app.analysis.infrastructure_impact import _geoapify_api_key, GEOAPIFY_CATEGORIES
+
+    api_key = _geoapify_api_key()
+    result: Dict[str, Any] = {
+        "enabled": bool(api_key),
+        "fallback_categories": sorted(GEOAPIFY_CATEGORIES),
+        "no_fallback_for": ["roads"],
+    }
+    if not api_key:
+        result["detail"] = "Set GEOAPIFY_API_KEY to enable this fallback (free tier, no credit card required)."
+        return result
+
+    try:
+        resp = _requests.get(
+            "https://api.geoapify.com/v2/places",
+            params={"categories": "healthcare.hospital", "filter": "rect:12.0,45.0,12.1,45.1", "limit": 1, "apiKey": api_key},
+            timeout=10,
+        )
+        result["connection_check"] = "success" if resp.ok else f"failed (HTTP {resp.status_code})"
+    except Exception as e:
+        result["connection_check"] = "failed"
+        result["error"] = str(e)
+
+    return result
+
+
 @app.post("/api/search", response_model=SearchResponse, tags=["Discovery"])
 async def search_scenes(request: SearchRequest) -> SearchResponse:
     """
