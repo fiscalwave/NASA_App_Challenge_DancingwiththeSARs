@@ -197,8 +197,12 @@ def query_infrastructure_category(category: str, bbox: Tuple[float, float, float
         bbox: (west, south, east, north) in EPSG:4326
 
     Returns:
-        The raw Overpass-shaped JSON response ({"elements": [...]}),
-        regardless of which real source (Overpass or Geoapify) answered.
+        The raw Overpass-shaped JSON response ({"elements": [...]}), plus a
+        "source" key ("overpass" or "geoapify") identifying which real
+        service actually answered - callers that need to show the required
+        Geoapify attribution when it was used (see its free-tier terms)
+        can key off this field; existing consumers that only read
+        "elements" are unaffected by its presence.
 
     Raises:
         ValueError: unknown category
@@ -217,7 +221,9 @@ def query_infrastructure_category(category: str, bbox: Tuple[float, float, float
     overpass_timeout = 10 if has_fallback else 25
 
     try:
-        return _query_overpass(INFRA_QUERIES[category]["ql"], bbox, timeout=overpass_timeout)
+        result = _query_overpass(INFRA_QUERIES[category]["ql"], bbox, timeout=overpass_timeout)
+        result["source"] = "overpass"
+        return result
     except DataIngestionError as overpass_error:
         if not has_fallback:
             raise
@@ -225,7 +231,9 @@ def query_infrastructure_category(category: str, bbox: Tuple[float, float, float
             f"Overpass failed for category '{category}' ({overpass_error}); trying real Geoapify fallback"
         )
         try:
-            return _query_geoapify(category, bbox)
+            result = _query_geoapify(category, bbox)
+            result["source"] = "geoapify"
+            return result
         except DataIngestionError as geoapify_error:
             raise DataIngestionError(
                 f"Overpass failed ({overpass_error}) and the Geoapify fallback also failed ({geoapify_error})"

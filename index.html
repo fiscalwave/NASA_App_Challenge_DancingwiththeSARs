@@ -1238,6 +1238,8 @@
                 <div class="layer-loading-spinner"></div>
                 <span id="layerLoadingText">Loading layer, please wait...</span>
             </div>
+
+            <p id="infraAttributionNote" style="font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; display: none;"></p>
         </div>
 
         <!-- PHASE 2C: EXPORT SUITE -->
@@ -2379,6 +2381,28 @@
         // for a week, so this is both more correct and more reliable.
         let infrastructureLayerGroups = {};
         let infrastructureLayerCache = {};
+        // Tracks which real source (Overpass or the Geoapify fallback)
+        // answered for each currently-loaded layer, so the UI can show the
+        // attribution Geoapify's free-tier terms require whenever their
+        // data is actually being displayed (never shown when Overpass -
+        // the primary, always-attributed-via-the-Leaflet-tile-layer source -
+        // answered instead).
+        let infrastructureLayerSource = {};
+
+        function updateInfraAttribution() {
+            const note = document.getElementById('infraAttributionNote');
+            const activeGeoapifyLayers = Object.keys(infrastructureLayerGroups).filter(layerType => {
+                const toggle = document.querySelector(`.layer-toggle[data-layer="${layerType}"]`);
+                return toggle && toggle.checked && infrastructureLayerSource[layerType] === 'geoapify';
+            });
+            if (activeGeoapifyLayers.length > 0) {
+                const labels = activeGeoapifyLayers.map(lt => INFRA_LAYER_LABELS[lt] || lt).join(', ');
+                note.innerHTML = `${labels} data via <a href="https://www.geoapify.com/" target="_blank" rel="noopener" style="color:#60a5fa;">Geoapify</a> (OpenStreetMap's own service was temporarily unavailable)`;
+                note.style.display = 'block';
+            } else {
+                note.style.display = 'none';
+            }
+        }
 
         async function queryInfrastructureLayer(layerType, south, west, north, east) {
             const url = `/api/v2/infrastructure/${layerType}?west=${west}&south=${south}&east=${east}&north=${north}`;
@@ -2407,9 +2431,11 @@
             });
             infrastructureLayerGroups = {};
             infrastructureLayerCache = {};
+            infrastructureLayerSource = {};
             document.querySelectorAll('.layer-toggle').forEach(toggle => {
                 toggle.checked = false;
             });
+            updateInfraAttribution();
         }
 
         const MAX_RENDERED_FEATURES = 1500;
@@ -2517,6 +2543,7 @@
                 if (infrastructureLayerGroups[layerType]) {
                     map.removeLayer(infrastructureLayerGroups[layerType]);
                 }
+                updateInfraAttribution();
                 return;
             }
 
@@ -2532,6 +2559,7 @@
             // Use cached data if the search area hasn't changed
             if (infrastructureLayerCache[layerType] === boundsKey && infrastructureLayerGroups[layerType]) {
                 infrastructureLayerGroups[layerType].addTo(map);
+                updateInfraAttribution();
                 scrollToMap();
                 return;
             }
@@ -2551,6 +2579,8 @@
 
                 infrastructureLayerGroups[layerType] = group;
                 infrastructureLayerCache[layerType] = boundsKey;
+                infrastructureLayerSource[layerType] = data.source || 'overpass';
+                updateInfraAttribution();
 
                 const count = data.elements ? data.elements.length : 0;
                 if (count === 0) {
