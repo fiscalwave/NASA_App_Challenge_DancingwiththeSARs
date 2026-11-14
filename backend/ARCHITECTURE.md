@@ -1,4 +1,4 @@
-# NISAR Flood & Wetland Change Mapping Application - Refactored Architecture
+# VAMIKA - NISAR Flood & Wetland Change Mapping Application - Refactored Architecture
 
 **Phase 1: Working Dashboard and Map with FastAPI Backend**
 

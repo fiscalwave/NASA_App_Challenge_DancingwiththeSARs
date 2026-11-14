@@ -19,14 +19,14 @@ def create_app() -> FastAPI:
         Configured FastAPI app
     """
     app = FastAPI(
-        title="NISAR Flood & Wetland Monitor",
-        description="API for NASA Space Apps Challenge - Interactive Flood & Wetland Change Mapping",
+        title="VAMIKA",
+        description="VAMIKA: API for NASA Space Apps Challenge - Interactive NISAR-based Flood & Wetland Change Mapping",
         version="0.1.0",
     )
     
     # Setup logging
     setup_logging()
-    logger.info("Initializing NISAR Flood & Wetland Monitor API")
+    logger.info("Initializing VAMIKA API")
     
     # Configure CORS for frontend
     app.add_middleware(

@@ -1,5 +1,5 @@
 """
-NISAR Flood & Wetland Monitor - Backend API
+VAMIKA - Backend API (NISAR-based Flood & Wetland Monitoring)
 Uses REAL ASF/NASA data only - NO MOCK DATA
 Requires Earthdata login credentials for authentication
 """
@@ -96,8 +96,8 @@ print(f"\nLoading .env from: {env_path}")
 print(f"Env file exists: {env_path.exists()}")
 
 app = FastAPI(
-    title="NISAR Flood & Wetland Monitor",
-    description="Interactive mapping and analysis of satellite-detected flood and wetland changes",
+    title="VAMIKA",
+    description="VAMIKA: interactive mapping and analysis of satellite-detected flood and wetland changes, powered by NASA NISAR",
     version="1.0.0"
 )
 
@@ -490,7 +490,7 @@ async def root():
     if index_path.exists():
         return FileResponse(index_path)
     return {
-        "name": "NISAR Flood & Wetland Monitor",
+        "name": "VAMIKA",
         "version": "1.0.0",
         "status": "running",
         "mode": "REAL API (No Mock Data)",
@@ -511,7 +511,7 @@ async def root():
 async def api_info():
     """API information."""
     return {
-        "name": "NISAR Flood & Wetland Monitor",
+        "name": "VAMIKA",
         "version": "1.0.0",
         "status": "running",
         "mode": "REAL API (No Mock Data)",

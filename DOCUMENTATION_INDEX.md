@@ -1,6 +1,6 @@
 # Documentation Index
 
-**NISAR Flood & Wetland Mapping Application - Quick Reference**
+**VAMIKA (NISAR-Based Flood & Wetland Mapping Application) - Quick Reference**
 
 ## 📖 Start Here
 

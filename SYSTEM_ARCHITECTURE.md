@@ -1,4 +1,4 @@
-# NISAR Flood & Wetland Mapping System Architecture
+# VAMIKA - System Architecture (NISAR-Based Flood & Wetland Mapping)
 
 ## 🏗️ System Architecture Diagram
 

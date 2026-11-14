@@ -1,5 +1,5 @@
 """
-NISAR Flood & Wetland Change Mapping Application - Backend
+VAMIKA - NISAR-Based Flood & Wetland Change Mapping Application - Backend
 NASA Space Apps Challenge 2024
 """
 

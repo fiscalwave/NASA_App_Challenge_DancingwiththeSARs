@@ -1,4 +1,6 @@
-# NISAR Flood & Wetland Mapping Application
+# VAMIKA
+
+**NISAR-Based Flood & Wetland Mapping Application**
 
 **NASA International Space Apps Challenge | Disaster Response Technology**
 

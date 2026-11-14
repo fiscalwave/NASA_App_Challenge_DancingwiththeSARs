@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-Common issues and solutions for the NISAR Flood & Wetland Mapping Application.
+Common issues and solutions for VAMIKA (the NISAR-based Flood & Wetland Mapping Application).
 
 ## Backend Issues
 

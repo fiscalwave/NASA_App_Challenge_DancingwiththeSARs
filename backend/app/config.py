@@ -1,5 +1,5 @@
 """
-Configuration management for the NISAR Flood & Wetland monitoring application.
+Configuration management for VAMIKA (NISAR-based flood & wetland monitoring application).
 Supports MOCK, LOCAL, API, and CLOUD data modes.
 """
 

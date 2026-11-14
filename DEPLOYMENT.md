@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers deployment of the NISAR Flood & Wetland Mapping Application to production environments.
+This guide covers deployment of VAMIKA (the NISAR-based Flood & Wetland Mapping Application) to production environments.
 
 ## Local Development Deployment
 

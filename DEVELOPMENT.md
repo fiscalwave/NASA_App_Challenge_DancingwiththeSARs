@@ -1,6 +1,6 @@
 # Development Guide
 
-Guide for contributing to the NISAR Flood & Wetland Mapping Application.
+Guide for contributing to VAMIKA (the NISAR-based Flood & Wetland Mapping Application).
 
 ## Local Development Setup
 

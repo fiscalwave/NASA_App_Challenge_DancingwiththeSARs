@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NISAR Flood & Wetland Mapping</title>
+    <title>VAMIKA</title>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
@@ -874,8 +874,8 @@
 <body>
     <header>
         <div class="container">
-            <h1>NISAR Flood & Wetland Mapping</h1>
-            <p>Advanced satellite-based disaster response and flood monitoring</p>
+            <h1>VAMIKA</h1>
+            <p>Advanced satellite-based disaster response and flood monitoring, powered by NASA NISAR</p>
         </div>
     </header>
 
@@ -1169,7 +1169,7 @@
     </main>
 
     <footer>
-        <p><strong>NISAR Flood & Wetland Change Mapping System</strong> | Advanced Satellite Scene Discovery</p>
+        <p><strong>VAMIKA</strong> | NISAR-Based Flood & Wetland Change Mapping | Advanced Satellite Scene Discovery</p>
         <p>NASA International Space Apps Challenge | Disaster Response Technology</p>
     </footer>
 
@@ -1499,13 +1499,33 @@
             }
             const statusUrl = data.status_url;
             let elapsedSeconds = 0;
+            let consecutiveFailures = 0;
+            const MAX_CONSECUTIVE_FAILURES = 10; // ~20s of pure network failure before giving up
             while (true) {
                 if (generation !== searchGeneration) return null; // superseded
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 elapsedSeconds += 2;
                 showGlobalStatus(`${label}... (${elapsedSeconds}s elapsed)`);
-                const statusResp = await fetch(statusUrl);
-                const statusData = await statusResp.json();
+
+                let statusResp, statusData;
+                try {
+                    statusResp = await fetch(statusUrl);
+                    statusData = await statusResp.json();
+                } catch (networkError) {
+                    // A transient blip (connection reset, empty/truncated
+                    // response body, etc.) during a single poll must not
+                    // abort real processing that's still running fine
+                    // server-side - just retry on the next interval, up to
+                    // a bounded limit.
+                    consecutiveFailures++;
+                    console.warn(`Transient error polling ${statusUrl} (attempt ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, networkError);
+                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                        throw new Error(`${label} failed: could not reach the server after ${consecutiveFailures} attempts (${networkError.message})`);
+                    }
+                    continue;
+                }
+                consecutiveFailures = 0;
+
                 if (!statusResp.ok) {
                     throw new Error(statusData.detail || `${label} failed`);
                 }
@@ -2046,7 +2066,7 @@
             
             // Add title
             doc.setFontSize(20);
-            doc.text('NISAR Flood Analysis Report', 20, 20);
+            doc.text('VAMIKA Flood Analysis Report', 20, 20);
             
             // Add metadata
             doc.setFontSize(12);
@@ -2066,9 +2086,9 @@
             
             // Add footer
             doc.setFontSize(9);
-            doc.text('NISAR Flood & Wetland Mapping System | NASA Space Apps Challenge', 20, 280);
+            doc.text('VAMIKA | NISAR-Based Flood & Wetland Mapping | NASA Space Apps Challenge', 20, 280);
             
-            doc.save('NISAR_Flood_Report.pdf');
+            doc.save('VAMIKA_Flood_Report.pdf');
             alert('OK PDF report downloaded!');
         }
 

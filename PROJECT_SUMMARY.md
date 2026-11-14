@@ -1,6 +1,6 @@
 # Project Summary
 
-**NISAR Flood & Wetland Mapping Application**  
+**VAMIKA (NISAR Flood & Wetland Mapping Application)**  
 **NASA International Space Apps Challenge**
 
 ---
@@ -415,4 +415,4 @@ Proceed with confidence to production deployment.
 ---
 
 *Last Updated: November 15, 2026*  
-*NISAR Flood & Wetland Mapping Application v2.0*
+*VAMIKA (NISAR Flood & Wetland Mapping Application) v2.0*
