@@ -51,11 +51,19 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.ingestion.cmr_adapter import CMRAdapter  # noqa: E402
+from app.processing.gcov_reader import GCOVReader  # noqa: E402
 
 FEATURED_LOCATIONS_PATH = BACKEND_DIR / "data" / "featured_locations.json"
 FEATURED_CACHE_PATH = BACKEND_DIR / "data" / "featured_cache.json"
 GCOV_CACHE_DIR = BACKEND_DIR / "data" / "cache"
 MANIFEST_PATH = GCOV_CACHE_DIR / "manifest.json"
+
+# Preference order for flood detection (HH/VV co-pol channels are most
+# sensitive to the open-water/double-bounce signatures used here; see
+# NASA/JPL's "Floods" StoryMap). Not every granule carries every
+# polarization, so the actual channel used is auto-detected per pair rather
+# than assumed.
+POLARIZATION_PREFERENCE = ["HHHH", "VVVV", "HVHV", "VHVH", "HHHV", "VVVH"]
 
 # NISAR launched 2025-07-30; science-quality data generally begins once the
 # commissioning phase ends. Starting the search a little before that is
@@ -63,7 +71,6 @@ MANIFEST_PATH = GCOV_CACHE_DIR / "manifest.json"
 # missing any early-released product.
 MISSION_START = date(2025, 8, 1)
 
-DEFAULT_POLARIZATION = "HHHH"
 POLL_INTERVAL_SECONDS = 5
 DOWNLOAD_TIMEOUT_SECONDS = 20 * 60  # large real GCOV files can take a while
 ANALYZE_TIMEOUT_SECONDS = 10 * 60
@@ -138,7 +145,8 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def wait_for_download(base_url: str, granule_id: str, download_url: str, expected_size_mb: Optional[float]) -> None:
+def wait_for_download(base_url: str, granule_id: str, download_url: str, expected_size_mb: Optional[float]) -> str:
+    """Starts/polls a real download to completion and returns the local file path."""
     resp = requests.post(
         f"{base_url}/api/v2/download/start",
         json={"granule_id": granule_id, "download_url": download_url, "expected_size_mb": expected_size_mb},
@@ -150,11 +158,27 @@ def wait_for_download(base_url: str, granule_id: str, download_url: str, expecte
     while time.time() < deadline:
         status = requests.get(f"{base_url}/api/v2/download/status/{granule_id}", timeout=30).json()
         if status.get("status") == "complete":
-            return
+            return status["local_path"]
         if status.get("status") in ("error", "failed"):
             raise RuntimeError(f"Download failed for {granule_id}: {status.get('error')}")
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(f"Download timed out for {granule_id}")
+
+
+def pick_best_polarization(before_path: str, after_path: str) -> str:
+    """Picks the best real polarization channel present in BOTH granules
+    (not every polarization is present in every real NISAR GCOV product),
+    preferring HH/VV co-pol channels for flood detection per NASA/JPL's
+    "Floods" StoryMap guidance."""
+    before_pols = set(GCOVReader.list_polarizations(Path(before_path)))
+    after_pols = set(GCOVReader.list_polarizations(Path(after_path)))
+    common = before_pols & after_pols
+    for pol in POLARIZATION_PREFERENCE:
+        if pol in common:
+            return pol
+    if common:
+        return sorted(common)[0]
+    raise RuntimeError(f"No common polarization between before ({before_pols}) and after ({after_pols})")
 
 
 def cleanup_raw_granules(granule_ids: List[str]) -> None:
@@ -207,18 +231,20 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
         print("  Downloading both real granules (parallel)...")
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(wait_for_download, base_url, before_meta["granule_id"], before_meta["download_url"], before_meta.get("size_mb")),
-                pool.submit(wait_for_download, base_url, after_meta["granule_id"], after_meta["download_url"], after_meta.get("size_mb")),
-            ]
-            for f in futures:
-                f.result()
+            futures = {
+                "before": pool.submit(wait_for_download, base_url, before_meta["granule_id"], before_meta["download_url"], before_meta.get("size_mb")),
+                "after": pool.submit(wait_for_download, base_url, after_meta["granule_id"], after_meta["download_url"], after_meta.get("size_mb")),
+            }
+            local_paths = {name: f.result() for name, f in futures.items()}
+
+        polarization = pick_best_polarization(local_paths["before"], local_paths["after"])
+        print(f"  Using real polarization channel: {polarization}")
 
         print("  Running real change detection...")
         analyze_body = {
             "before_granule_id": before_meta["granule_id"],
             "after_granule_id": after_meta["granule_id"],
-            "polarization": DEFAULT_POLARIZATION,
+            "polarization": polarization,
             "bounds": {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]},
         }
         analyze_resp = requests.post(f"{base_url}/api/v2/analyze", json=analyze_body, timeout=60)
@@ -261,7 +287,7 @@ def preseed_location(base_url: str, location: Dict[str, Any], cache: Dict[str, A
             "before_granule_id": before_meta["granule_id"],
             "after_granule_id": after_meta["granule_id"],
             "bounds": list(bbox),
-            "polarization": DEFAULT_POLARIZATION,
+            "polarization": polarization,
             "before_date": before_meta["time_start"],
             "after_date": after_meta["time_start"],
             "last_preseeded_at": datetime.now(timezone.utc).isoformat(),
