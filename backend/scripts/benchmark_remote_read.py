@@ -73,11 +73,36 @@ def get_edl_bearer_token() -> str:
     return token
 
 
-def get_granule_url_and_local_path() -> Tuple[str, Path]:
-    with open(MANIFEST_PATH) as f:
-        manifest = json.load(f)
-    entry = manifest[TARGET_GRANULE_ID]
-    return entry["url"], Path(entry["local_path"])
+def get_granule_url_and_local_path() -> Tuple[str, Any]:
+    """Resolve the real download URL for the target granule. Prefers the
+    local download-manifest (so we can also run the Approach A local-file
+    comparison if that file happens to still be on disk), but falls back to
+    querying real NASA CMR directly by granule_id if the manifest entry or
+    the raw file was already cleaned up (e.g. by the Featured Locations
+    pre-seed script's disk-space management) - either way this is a real
+    granule's real URL, never a placeholder."""
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH) as f:
+            manifest = json.load(f)
+        entry = manifest.get(TARGET_GRANULE_ID)
+        if entry and entry.get("url"):
+            local_path = Path(entry["local_path"])
+            return entry["url"], (local_path if local_path.exists() else None)
+
+    # Fall back to a real, direct CMR lookup for this exact granule_id.
+    import requests as _requests
+    resp = _requests.get(
+        "https://cmr.earthdata.nasa.gov/search/granules.json",
+        params={"producer_granule_id": TARGET_GRANULE_ID, "page_size": 1},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    entries = resp.json()["feed"]["entry"]
+    if not entries:
+        raise RuntimeError(f"Granule {TARGET_GRANULE_ID} not found in real NASA CMR either")
+    links = entries[0]["links"]
+    url = next(l["href"] for l in links if l.get("rel", "").endswith("/data#") and l["href"].startswith("https://"))
+    return url, None
 
 
 def benchmark_local_h5py(local_path: Path, bbox: Dict[str, float]) -> Dict[str, Any]:
@@ -171,16 +196,20 @@ def main() -> None:
     url, local_path = get_granule_url_and_local_path()
     print(f"Target granule: {TARGET_GRANULE_ID}")
     print(f"  Remote URL: {url}")
-    print(f"  Local path: {local_path} (exists: {local_path.exists()})")
+    print(f"  Local path: {local_path if local_path else '(not available on this machine - skipping Approach A)'}")
     print(f"  AOI bbox (EPSG:4326): {AOI_BBOX_4326}\n")
 
-    print("--- Approach A: local h5py (file already fully downloaded) ---")
-    try:
-        result_a = benchmark_local_h5py(local_path, AOI_BBOX_4326)
-        print(f"  Result: {result_a}\n")
-    except Exception as e:
-        result_a = {"error": str(e)}
-        print(f"  FAILED: {e}\n")
+    result_a = None
+    if local_path:
+        print("--- Approach A: local h5py (file already fully downloaded) ---")
+        try:
+            result_a = benchmark_local_h5py(local_path, AOI_BBOX_4326)
+            print(f"  Result: {result_a}\n")
+        except Exception as e:
+            result_a = {"error": str(e)}
+            print(f"  FAILED: {e}\n")
+    else:
+        print("--- Approach A skipped: no local copy of this granule on this machine ---\n")
 
     print("--- Approach B: remote fsspec partial read (no full download) ---")
     try:
