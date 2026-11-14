@@ -89,20 +89,24 @@ def get_granule_url_and_local_path() -> Tuple[str, Any]:
             local_path = Path(entry["local_path"])
             return entry["url"], (local_path if local_path.exists() else None)
 
-    # Fall back to a real, direct CMR lookup for this exact granule_id.
-    import requests as _requests
-    resp = _requests.get(
-        "https://cmr.earthdata.nasa.gov/search/granules.json",
-        params={"producer_granule_id": TARGET_GRANULE_ID, "page_size": 1},
-        timeout=30,
+    # Fall back to a real, direct CMR lookup using our own already-tested
+    # CMRAdapter (reuses the exact same discovery logic the live app uses,
+    # rather than inventing new ad-hoc CMR query parameters) - the AOI/date
+    # window matches the real Majuli Island featured location, which is
+    # where this exact granule_id was discovered earlier this session.
+    from datetime import date
+    from app.ingestion.cmr_adapter import CMRAdapter
+
+    granules = CMRAdapter.discover_granules(
+        bounds=(AOI_BBOX_4326["minx"] - 0.3, AOI_BBOX_4326["miny"] - 0.3,
+                AOI_BBOX_4326["maxx"] + 0.3, AOI_BBOX_4326["maxy"] + 0.3),
+        start=date(2026, 8, 1),
+        end=date(2026, 8, 31),
     )
-    resp.raise_for_status()
-    entries = resp.json()["feed"]["entry"]
-    if not entries:
+    match = next((g for g in granules if g["granule_id"] == TARGET_GRANULE_ID), None)
+    if not match:
         raise RuntimeError(f"Granule {TARGET_GRANULE_ID} not found in real NASA CMR either")
-    links = entries[0]["links"]
-    url = next(l["href"] for l in links if l.get("rel", "").endswith("/data#") and l["href"].startswith("https://"))
-    return url, None
+    return match["download_url"], None
 
 
 def benchmark_local_h5py(local_path: Path, bbox: Dict[str, float]) -> Dict[str, Any]:
