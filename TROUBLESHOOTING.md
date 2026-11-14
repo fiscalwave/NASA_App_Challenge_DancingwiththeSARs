@@ -582,15 +582,20 @@ Backend server only binds to localhost by default. To access from other machines
 
 **Error:** "Could not load the hospitals layer: OpenStreetMap's free public map-data service (Overpass API) is temporarily unavailable or overloaded right now" (or similar), or the Affected Area card shows "N/A" for hospitals/settlements/roads
 
-**This is a real, external service outage — not a bug in this application.** The Overpass API (OpenStreetMap's public query service) is a free, volunteer-run service with no uptime guarantee, and it is occasionally slow or fully unavailable. Verified by directly querying all 3 mirrors this project tries (`overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee`) — when all three time out, the error is genuinely external.
+**This is a real, external service outage — not a bug in this application.** The Overpass API (OpenStreetMap's public query service) is a free, volunteer-run service with no uptime guarantee. Verified on 2026-11-14 from two independent networks (this project's GCP VM, and a separate home network) against every mirror this project tries — all failed identically from both vantage points at the same time, confirming a genuine, widespread public Overpass overload rather than anything specific to this app's hosting. OpenStreetMap's own wiki now states of the main `overpass-api.de` server: *"Nowadays this server is overloaded... do not expect high reliability."*
+
+Note: `overpass.kumi.systems` (an old mirror name previously listed here) was discovered to be the exact same physical server as `overpass.private.coffee` (identical reverse DNS/IP) — not a real independent fallback. It's been replaced with `maps.mail.ru/osm/tools/overpass` (VK Maps), a genuinely separate deployment, so mirror failover now tries 3 real independent services: `overpass-api.de`, `overpass.private.coffee`, and `maps.mail.ru`.
+
+As of this fix, the "Infrastructure Layers" map toggles (Hospitals/Settlements/Power Plants/Roads) are also queried through this app's own backend (`GET /api/v2/infrastructure/{layer}`) instead of directly from the browser. This fixes a separate real issue: browser JavaScript cannot set a custom `User-Agent` header (forbidden by the Fetch spec), so direct-from-browser requests didn't comply with Overpass's own documented policy of identifying the calling application. The backend also caches each real result for 7 days, so once any one user successfully loads a layer for an area, everyone else gets an instant cached response instead of hitting the fragile public service again.
 
 **What still works when this happens:**
 - Real flood detection, confidence scoring, and swipe imagery all complete normally and are unaffected
 - The priority score still computes using whatever infrastructure data *is* available (or reports "data unavailable" for the affected categories)
 
 **Solutions:**
-- Wait a few minutes and retry — Overpass mirrors typically recover on their own
+- Wait a few minutes and retry — Overpass mirrors typically recover on their own (and once one query for an area succeeds, it's cached for a week)
 - There is no code-level fix for an external service being down; this app already retries across 3 independent mirrors before giving up
+- **Why not switch to Google Maps instead?** Google Maps/Places is a paid API (requires Google Cloud billing), caps results far below Overpass's exhaustive per-area dumps, and has no public API for bulk road-network geometry at all — the "Roads" layer specifically has no viable replacement there. It isn't a drop-in fix for a temporary free-service outage.
 
 ---
 

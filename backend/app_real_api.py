@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, date
 import os
 import sys
@@ -65,11 +65,12 @@ except ImportError as e:
 # impact analysis via OpenStreetMap + explainable priority scoring) -
 # additive, built on top of Phase 5's real change-detection output
 try:
-    from app.analysis.infrastructure_impact import compute_infrastructure_impact
+    from app.analysis.infrastructure_impact import compute_infrastructure_impact, query_infrastructure_category
     from app.analysis.priority import compute_priority, compute_observation_age_days, compute_detection_confidence
 except ImportError as e:
     print(f"Warning: Could not import Phase 6 analysis pipeline: {e}")
     compute_infrastructure_impact = None
+    query_infrastructure_category = None
     compute_priority = None
     compute_observation_age_days = None
     compute_detection_confidence = None
@@ -1604,6 +1605,104 @@ async def get_impact_status(analysis_id: str):
         return result
 
     return {"status": "processing", "analysis_id": analysis_id}
+
+
+# ============================================================================
+# PHASE 6B: SINGLE-CATEGORY INFRASTRUCTURE LAYERS (for the frontend's
+# "Infrastructure Layers" map toggles - roads/hospitals/settlements/power)
+# ============================================================================
+# Previously the frontend queried Overpass directly from the browser. Two
+# real problems with that: (1) browser JS cannot set a custom User-Agent
+# header (a forbidden header per the Fetch spec), so those requests didn't
+# comply with Overpass's own documented usage policy of identifying the
+# calling application; (2) every user re-fetched the same area from scratch,
+# multiplying load on an already-fragile free public service. Routing
+# through the backend fixes both: it reuses the same mirror-failover
+# Overpass code as /impact (which does send a real User-Agent), and adds a
+# disk-backed cache so the same bbox+category is only ever fetched from
+# Overpass once per TTL, however many users/searches request it.
+
+INFRA_LAYER_CACHE_PATH = Path(__file__).parent / "data" / "infrastructure_layer_cache.json"
+INFRA_LAYER_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # real infrastructure changes slowly; a week is safe
+_infra_layer_cache_lock = threading.Lock()
+
+# Maps the frontend's layer-toggle names to infrastructure_impact.py's
+# INFRA_QUERIES keys (identical for 3 of the 4; "power" -> "power_plants").
+FRONTEND_LAYER_TO_CATEGORY = {
+    "roads": "roads",
+    "hospitals": "hospitals",
+    "settlements": "settlements",
+    "power": "power_plants",
+    "schools": "schools",
+}
+
+
+def _infra_cache_key(category: str, bbox: Tuple[float, float, float, float]) -> str:
+    # Rounded to 3 decimal places (~100m) - matches the frontend's existing
+    # bounds-rounding convention for its own (now-removed) client cache, and
+    # coarse enough that near-identical repeat searches reuse the same entry.
+    west, south, east, north = bbox
+    return f"{category}|{south:.3f},{west:.3f},{north:.3f},{east:.3f}"
+
+
+def _load_infra_layer_cache() -> Dict[str, Any]:
+    if not INFRA_LAYER_CACHE_PATH.exists():
+        return {}
+    loaded = _load_json_safe(INFRA_LAYER_CACHE_PATH)
+    return loaded if loaded is not None else {}
+
+
+@app.get("/api/v2/infrastructure/{layer_type}", tags=["Infrastructure Layers"])
+async def get_infrastructure_layer(layer_type: str, west: float, south: float, east: float, north: float):
+    """
+    Real OpenStreetMap/Overpass features for one infrastructure category
+    (roads, hospitals, settlements, power, schools) over an AOI - server-side,
+    with mirror failover and a 7-day disk-backed cache (see note above for
+    why this replaced direct-from-browser Overpass queries).
+
+    Returns the raw Overpass JSON ({"elements": [...]}) the frontend already
+    knows how to render - never fabricated; if every real Overpass mirror
+    fails, this returns a 502 with the real underlying error, exactly as
+    honestly as the existing /impact pipeline does.
+    """
+    category = FRONTEND_LAYER_TO_CATEGORY.get(layer_type)
+    if category is None or query_infrastructure_category is None:
+        raise HTTPException(status_code=400, detail=f"Unknown infrastructure layer '{layer_type}'")
+
+    bbox = (west, south, east, north)
+    cache_key = _infra_cache_key(category, bbox)
+
+    with _infra_layer_cache_lock:
+        cache = _load_infra_layer_cache()
+        entry = cache.get(cache_key)
+        if entry and (time.time() - entry.get("cached_at", 0)) < INFRA_LAYER_CACHE_TTL_SECONDS:
+            result = dict(entry["data"])
+            result["cached"] = True
+            return result
+
+    try:
+        data = query_infrastructure_category(category, bbox)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Could not load the real {layer_type} layer from OpenStreetMap: {e}. "
+                f"This is an external OpenStreetMap/Overpass service issue, not a bug in this app."
+            ),
+        )
+
+    with _infra_layer_cache_lock:
+        cache = _load_infra_layer_cache()
+        cache[cache_key] = {"cached_at": time.time(), "data": data}
+        try:
+            with open(INFRA_LAYER_CACHE_PATH, "w") as f:
+                json.dump(cache, f)
+        except OSError as e:
+            print(f"Warning: could not persist infrastructure layer cache: {e}")
+
+    result = dict(data)
+    result["cached"] = False
+    return result
 
 
 # ============================================================================

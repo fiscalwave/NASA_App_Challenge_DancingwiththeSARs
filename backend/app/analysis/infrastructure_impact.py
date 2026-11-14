@@ -28,9 +28,20 @@ logger = get_logger(__name__)
 
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
+# NOTE: "overpass.kumi.systems" (previously listed as a 3rd mirror here) is
+# the OLD name for the SAME host as "overpass.private.coffee" (confirmed via
+# DNS - both resolve to the identical IP/reverse-DNS) - it was never a real
+# independent fallback, just the same server under two names. Replaced with
+# maps.mail.ru (VK Maps), a genuinely separate public Overpass deployment.
+# Verified 2026-11-14: during a real, confirmed-widespread public Overpass
+# overload (reproduced independently from two unrelated networks), ALL
+# public mirrors including this list were degraded at once - this is a
+# real capacity crisis of the free OSM ecosystem, not a bug in this app;
+# see OSM's own wiki note on overpass-api.de: "Nowadays this server is
+# overloaded... do not expect high reliability."
 
 # Proximity bands used for "requires priority inspection" style reporting.
 # These are real computed distances against real geometry - not estimates.
@@ -78,6 +89,35 @@ def _query_overpass(ql_body: str, bbox: Tuple[float, float, float, float], timeo
         except requests.RequestException as e:
             last_error = e
     raise DataIngestionError(f"All Overpass mirrors failed: {last_error}")
+
+
+def query_infrastructure_category(category: str, bbox: Tuple[float, float, float, float]) -> Dict[str, Any]:
+    """
+    Query real OpenStreetMap features for one infrastructure category over
+    an AOI, with the same mirror-failover logic used by
+    compute_infrastructure_impact() - exposed as a public entry point so a
+    single-layer request (e.g. the frontend's "Infrastructure Layers"
+    toggles) can reuse the exact same server-side Overpass querying code,
+    instead of querying Overpass directly from the browser (which cannot
+    send a custom User-Agent header - a forbidden header in the Fetch spec -
+    so those requests don't comply with Overpass's own usage policy of
+    identifying the calling application).
+
+    Args:
+        category: one of INFRA_QUERIES's keys (roads, hospitals, schools,
+            settlements, power_plants)
+        bbox: (west, south, east, north) in EPSG:4326
+
+    Returns:
+        The raw Overpass JSON response ({"elements": [...]})
+
+    Raises:
+        ValueError: unknown category
+        DataIngestionError: every mirror failed (never returns fabricated data)
+    """
+    if category not in INFRA_QUERIES:
+        raise ValueError(f"Unknown infrastructure category '{category}'. Valid: {sorted(INFRA_QUERIES)}")
+    return _query_overpass(INFRA_QUERIES[category]["ql"], bbox)
 
 
 def _elements_to_geometries(elements: List[Dict[str, Any]], geometry_kind: str):

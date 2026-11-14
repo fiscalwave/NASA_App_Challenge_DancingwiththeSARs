@@ -2366,43 +2366,36 @@
         }
 
         // ========== PHASE 2B: INFRASTRUCTURE LAYERS ==========
+        // Queried through our OWN backend (/api/v2/infrastructure/{layer}),
+        // not directly from the browser to Overpass as before. Two real
+        // problems with the old direct-from-browser approach: (1) browser
+        // JS cannot set a custom User-Agent header (forbidden by the Fetch
+        // spec), so those requests didn't comply with Overpass's own usage
+        // policy of identifying the calling app; (2) every user re-fetched
+        // the same area from scratch, multiplying load on an already-
+        // fragile free public service. The backend reuses the same
+        // mirror-failover Overpass code as the infrastructure-impact
+        // pipeline (which does send a real User-Agent) and caches results
+        // for a week, so this is both more correct and more reliable.
         let infrastructureLayerGroups = {};
         let infrastructureLayerCache = {};
 
-        const OVERPASS_ENDPOINTS = [
-            'https://overpass-api.de/api/interpreter',
-            'https://overpass.kumi.systems/api/interpreter',
-            'https://overpass.private.coffee/api/interpreter'
-        ];
-
-        async function queryOverpass(query, timeoutMs = 20000) {
-            let lastError;
-            for (const endpoint of OVERPASS_ENDPOINTS) {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                    const response = await fetch(endpoint, { method: 'POST', body: query, signal: controller.signal });
-                    clearTimeout(timeoutId);
-                    if (response.ok) {
-                        return await response.json();
-                    }
-                    lastError = new Error(`${endpoint} returned HTTP ${response.status}`);
-                } catch (e) {
-                    clearTimeout(timeoutId);
-                    lastError = e.name === 'AbortError'
-                        ? new Error(`${endpoint} timed out after ${timeoutMs}ms`)
-                        : e;
-                }
+        async function queryInfrastructureLayer(layerType, south, west, north, east) {
+            const url = `/api/v2/infrastructure/${layerType}?west=${west}&south=${south}&east=${east}&north=${north}`;
+            const response = await fetch(url);
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || `Could not load the ${layerType} layer`);
             }
-            throw lastError;
+            return data;
         }
 
-        // queryOverpass() only throws after every configured mirror has
-        // already failed, so any error reaching the UI means OpenStreetMap's
-        // free public Overpass service is temporarily overloaded/unreachable -
-        // not a bug in this app. Show a clear, honest, human-readable message
-        // (with the real technical reason still visible for transparency and
-        // debugging) rather than a raw low-level error string.
+        // Any error reaching the UI here means the backend already tried
+        // every real Overpass mirror with its own failover logic and all of
+        // them failed - i.e. OpenStreetMap's free public Overpass service is
+        // genuinely unavailable/overloaded right now, not a bug in this app.
+        // Show a clear, honest, human-readable message (with the real
+        // technical reason still visible for transparency/debugging).
         function buildOverpassErrorMessage(layerType, error) {
             const reason = error && error.message ? error.message : String(error);
             return `Could not load the ${layerType} layer: OpenStreetMap's free public map-data service (Overpass API) is temporarily unavailable or overloaded right now. This is an external service issue, not a problem with this app - please try again in a few minutes.\n\n(Technical detail: ${reason})`;
@@ -2421,9 +2414,26 @@
 
         const MAX_RENDERED_FEATURES = 1500;
 
+        // The backend always requests "out geom;" (needed for real road
+        // polylines), so a point-category feature mapped as a way (e.g. a
+        // hospital building footprint, not a single node) arrives with a
+        // "geometry" array of points rather than a single "center" point -
+        // compute a real centroid from that outline instead.
+        function centroidOfGeometry(geometry) {
+            if (!geometry || geometry.length === 0) return null;
+            const lat = geometry.reduce((sum, p) => sum + p.lat, 0) / geometry.length;
+            const lon = geometry.reduce((sum, p) => sum + p.lon, 0) / geometry.length;
+            return [lat, lon];
+        }
+
+        function pointCoordFor(el) {
+            if (el.type === 'node') return [el.lat, el.lon];
+            if (el.type === 'way' && el.geometry) return centroidOfGeometry(el.geometry);
+            return null;
+        }
+
         const INFRA_LAYER_CONFIG = {
             roads: {
-                query: (s, w, n, e) => `[out:json][timeout:25];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|residential)$"](${s},${w},${n},${e}););out geom;`,
                 render: (data, group) => {
                     data.elements
                         .filter(el => el.type === 'way' && el.geometry)
@@ -2437,10 +2447,9 @@
                 }
             },
             hospitals: {
-                query: (s, w, n, e) => `[out:json][timeout:25];(node["amenity"="hospital"](${s},${w},${n},${e});way["amenity"="hospital"](${s},${w},${n},${e}););out center;`,
                 render: (data, group) => {
                     data.elements.slice(0, MAX_RENDERED_FEATURES).forEach(el => {
-                        const coord = el.type === 'node' ? [el.lat, el.lon] : (el.center ? [el.center.lat, el.center.lon] : null);
+                        const coord = pointCoordFor(el);
                         if (!coord) return;
                         L.circleMarker(coord, { radius: 7, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 0.9, weight: 1 })
                             .bindPopup((el.tags && el.tags.name) ? el.tags.name : 'Hospital')
@@ -2449,7 +2458,6 @@
                 }
             },
             settlements: {
-                query: (s, w, n, e) => `[out:json][timeout:25];(node["place"~"city|town|village|hamlet"](${s},${w},${n},${e}););out body;`,
                 render: (data, group) => {
                     data.elements
                         .filter(el => el.type === 'node')
@@ -2462,10 +2470,9 @@
                 }
             },
             power: {
-                query: (s, w, n, e) => `[out:json][timeout:25];(node["power"="plant"](${s},${w},${n},${e});way["power"="plant"](${s},${w},${n},${e}););out center;`,
                 render: (data, group) => {
                     data.elements.slice(0, MAX_RENDERED_FEATURES).forEach(el => {
-                        const coord = el.type === 'node' ? [el.lat, el.lon] : (el.center ? [el.center.lat, el.center.lon] : null);
+                        const coord = pointCoordFor(el);
                         if (!coord) return;
                         L.circleMarker(coord, { radius: 7, color: '#f97316', fillColor: '#f97316', fillOpacity: 0.9, weight: 1 })
                             .bindPopup((el.tags && el.tags.name) ? el.tags.name : 'Power Plant')
@@ -2532,8 +2539,7 @@
             checkbox.disabled = true;
             showLayerLoading(layerType);
             try {
-                const query = config.query(bounds.south, bounds.west, bounds.north, bounds.east);
-                const data = await queryOverpass(query);
+                const data = await queryInfrastructureLayer(layerType, bounds.south, bounds.west, bounds.north, bounds.east);
 
                 if (infrastructureLayerGroups[layerType]) {
                     map.removeLayer(infrastructureLayerGroups[layerType]);
