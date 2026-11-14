@@ -302,6 +302,24 @@ class SARBackscatterRenderer:
         return f"data:image/png;base64,{img_base64}"
 
 
+# Large real AOIs can produce multi-thousand-pixel-per-side GeoTIFFs; the
+# swipe-view PNG is a visual preview, not the analysis data (the real,
+# full-resolution GeoTIFF remains available unmodified via
+# /api/v2/analyze/{id}/layer/{name}.tif for export/GIS use) - rendering the
+# preview at full resolution measured 80+ seconds and a 50+ MB PNG for one
+# real 3000x3000 AOI (SAR speckle compresses poorly), which is far more
+# detail than a browser swipe comparison needs or can usefully display.
+MAX_DISPLAY_DIM = 1600
+
+
+def _decimated_shape(height: int, width: int, max_dim: int = MAX_DISPLAY_DIM) -> Tuple[int, int]:
+    """Target (height, width) for display, preserving aspect ratio, capped at max_dim on the longer side."""
+    if max(height, width) <= max_dim:
+        return height, width
+    scale = max_dim / max(height, width)
+    return max(1, round(height * scale)), max(1, round(width * scale))
+
+
 def render_real_sar_layer(
     tif_path: str,
     title: str,
@@ -318,19 +336,24 @@ def render_real_sar_layer(
     is involved anywhere in this function.
     """
     import rasterio
+    from rasterio.enums import Resampling
 
     with rasterio.open(tif_path) as src:
-        backscatter_db = src.read(1).astype(np.float64)
+        out_shape = _decimated_shape(src.height, src.width)
+        backscatter_db = src.read(1, out_shape=out_shape, resampling=Resampling.average).astype(np.float64)
 
+    # Masks are written from the same aligned grid as the backscatter layer,
+    # so they share its native shape - reusing out_shape keeps all arrays
+    # aligned for the overlay blend.
     inundation_mask = None
     if inundation_mask_path:
         with rasterio.open(inundation_mask_path) as src:
-            inundation_mask = src.read(1).astype(np.float32)
+            inundation_mask = src.read(1, out_shape=out_shape, resampling=Resampling.average).astype(np.float32)
 
     vegetation_flood_mask = None
     if vegetation_flood_mask_path:
         with rasterio.open(vegetation_flood_mask_path) as src:
-            vegetation_flood_mask = src.read(1).astype(np.float32)
+            vegetation_flood_mask = src.read(1, out_shape=out_shape, resampling=Resampling.average).astype(np.float32)
 
     renderer = SARBackscatterRenderer(width=backscatter_db.shape[1], height=backscatter_db.shape[0])
     img = renderer.render_sar_backscatter(
