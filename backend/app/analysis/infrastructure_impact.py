@@ -367,21 +367,33 @@ def compute_infrastructure_impact(
 
     categories: Dict[str, Any] = {}
 
-    for category, spec in INFRA_QUERIES.items():
+    # Real flood polygons for large/dense AOIs can occasionally make one
+    # category's spatial analysis pathologically slow (e.g. an unusually
+    # complex real geometry), even with the prepared-geometry index above.
+    # Previously the whole function processed categories sequentially and
+    # only returned once *every* category finished - so one slow category
+    # (observed live: a point category stuck for 20+ minutes on a Jakarta
+    # analysis) silently blocked every other category's already-successful
+    # real data (e.g. hospitals, fetched via the Geoapify fallback in
+    # seconds) from ever reaching the user. Each category's spatial
+    # analysis now runs in its own worker with a bounded wall-clock budget,
+    # so a single slow/stuck category is reported as unavailable (never
+    # fabricated) instead of hiding every other category's real results.
+    CATEGORY_PROCESSING_TIMEOUT_SECONDS = 30
+
+    def _process_category(category: str, spec: Dict[str, str]):
         outcome, payload = fetched[category]
         if outcome == "error":
-            categories[category] = {
+            return {
                 "status": "unavailable",
                 "error": payload,
                 "note": "OpenStreetMap/Overpass query failed for this category; reporting unavailable rather than fabricating results.",
             }
-            continue
 
         elements = payload
         geoms_4326 = _elements_to_geometries(elements, spec["geometry"])
         if not geoms_4326:
-            categories[category] = {"status": "no_features_found", "total_found": 0}
-            continue
+            return {"status": "no_features_found", "total_found": 0}
 
         if spec["geometry"] == "line":
             total_length_km = 0.0
@@ -396,7 +408,7 @@ def compute_infrastructure_impact(
                     intersecting_length_km += intersecting_segment.length / 1000.0
                     intersecting_count += 1
 
-            categories[category] = {
+            return {
                 "status": "ok",
                 "total_segments_found": len(geoms_4326),
                 "total_length_km": round(total_length_km, 2),
@@ -425,7 +437,7 @@ def compute_infrastructure_impact(
                             })
                             break
 
-            categories[category] = {
+            return {
                 "status": "ok",
                 "total_found": len(geoms_4326),
                 "within_flood_polygon": within_flood,
@@ -433,5 +445,30 @@ def compute_infrastructure_impact(
                 "nearby_1km": sorted(nearby[1.0], key=lambda x: x["distance_km"]),
                 "nearby_5km": sorted(nearby[5.0], key=lambda x: x["distance_km"]),
             }
+
+    # Not using a `with` block deliberately: ThreadPoolExecutor's context
+    # manager calls shutdown(wait=True) on exit, which would block this
+    # function (and the real category results it already has in hand)
+    # until every submitted thread finishes - including ones we've already
+    # given up on below. A stuck thread is simply left to finish on its
+    # own in the background; it cannot be force-killed in pure Python, but
+    # it must not hold up results we already have.
+    processing_executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(INFRA_QUERIES))
+    future_to_category = {
+        processing_executor.submit(_process_category, category, spec): category
+        for category, spec in INFRA_QUERIES.items()
+    }
+    for future, category in future_to_category.items():
+        try:
+            categories[category] = future.result(timeout=CATEGORY_PROCESSING_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            categories[category] = {
+                "status": "unavailable",
+                "error": f"Spatial analysis did not complete within {CATEGORY_PROCESSING_TIMEOUT_SECONDS}s",
+                "note": "Real OpenStreetMap data was fetched for this category, but analyzing it against the "
+                        "detected flood polygon took too long (unusually large/complex real dataset for this "
+                        "area) - reporting unavailable rather than blocking every other category's real results.",
+            }
+    processing_executor.shutdown(wait=False)
 
     return {"status": "success", "categories": categories}
