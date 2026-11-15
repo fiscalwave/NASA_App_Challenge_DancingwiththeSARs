@@ -198,10 +198,41 @@
         .card.map-card .card-header {
             padding: 2rem;
             border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
         }
 
         .card.map-card .card-header h3 {
             margin: 0;
+        }
+
+        .map-download-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.55rem 1rem;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            border-radius: 0.5rem;
+            color: #7dd3fc;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .map-download-btn:hover {
+            background: rgba(56, 189, 248, 0.22);
+            border-color: rgba(56, 189, 248, 0.7);
+        }
+
+        .map-download-btn:disabled {
+            opacity: 0.6;
+            cursor: default;
         }
 
         .card.map-card .map-container {
@@ -1317,6 +1348,10 @@
             <div class="card map-card">
                 <div class="card-header">
                     <h3>Geographic Area</h3>
+                    <button class="map-download-btn" id="downloadMapBtn" type="button" title="Download the current map view (including any flood overlay/infrastructure layers shown) as a PNG image">
+                        <span class="material-icons" style="font-size: 18px;">download</span>
+                        Download Map
+                    </button>
                 </div>
                 <div class="map-container">
                     <div id="map"></div>
@@ -2919,6 +2954,40 @@
             `;
         }
 
+        // Downloads exactly what the Leaflet map is currently showing - AOI
+        // circle, any loaded flood/infrastructure overlay layers, base tiles,
+        // whatever the user has toggled on - as a single PNG, at whatever
+        // pan/zoom state the user left it in. Uses the same html2canvas
+        // capture approach already used for the Emergency Information map
+        // snapshot, so no new dependency is introduced.
+        async function downloadMapSnapshot() {
+            const btn = document.getElementById('downloadMapBtn');
+            const mapEl = document.getElementById('map');
+            if (!mapEl) return;
+
+            const originalLabel = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="material-icons" style="font-size: 18px;">hourglass_top</span>Capturing...';
+            try {
+                const canvas = await html2canvas(mapEl, { useCORS: true, logging: false });
+                const dataUrl = canvas.toDataURL('image/png');
+
+                const link = document.createElement('a');
+                const location = (currentSearchContext && currentSearchContext.locationText) || 'map';
+                link.href = dataUrl;
+                link.download = `VAMIKA_Map_${location.replace(/[^a-z0-9]+/gi, '_')}_${Date.now()}.png`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            } catch (e) {
+                console.error('Could not capture the map for download:', e);
+                alert(`Could not download the map image: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalLabel;
+            }
+        }
+
         async function openEmergencyDashboard() {
             if (!currentSearchContext || !currentSearchContext.summary) {
                 alert('Run a search and wait for the real flood-detection results before opening Emergency Information.');
@@ -3492,6 +3561,9 @@ ${placemarks}
                     closeEmergencyDashboard();
                 }
             });
+
+            // Download the current map view (whatever state/overlays are shown) as a PNG
+            document.getElementById('downloadMapBtn').addEventListener('click', downloadMapSnapshot);
         });
     </script>
 </body>
