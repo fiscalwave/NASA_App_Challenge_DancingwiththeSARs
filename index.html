@@ -351,10 +351,18 @@
             top: 0;
         }
 
+        /* Before-layer is always full-size and full-position, same as the
+           after-layer beneath it - only the VISIBLE portion is clipped via
+           clip-path (set in JS). This is what keeps both images at an
+           identical scale/pan while dragging: resizing the element's own
+           width instead (the old approach) made object-fit:cover
+           recompute a different crop for every handle position, so the
+           image appeared to zoom/pan as you swiped. */
         .swipe-before {
             left: 0;
             z-index: 5;
             background-color: #2d3748;
+            clip-path: inset(0 50% 0 0);
         }
 
         .swipe-after {
@@ -517,6 +525,37 @@
             font-size: 1rem;
         }
 
+        /* Collapsed-by-default confidence details: GIS-style corner info
+           icon reveals the quality-check breakdown on click instead of
+           always showing it, so the badge doesn't compete for attention
+           with the backscatter legend on the opposite corner. */
+        .confidence-info-btn {
+            margin-left: auto;
+            width: 1.3rem;
+            height: 1.3rem;
+            border-radius: 50%;
+            border: 1px solid rgba(148, 163, 184, 0.5);
+            background: transparent;
+            color: #94a3b8;
+            font-size: 0.75rem;
+            font-style: italic;
+            font-family: Georgia, serif;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+
+        .confidence-info-btn:hover,
+        .confidence-info-btn.active {
+            background: rgba(56, 189, 248, 0.2);
+            color: #38bdf8;
+            border-color: #38bdf8;
+        }
+
         /* PHASE 2A: AFFECTED AREA ESTIMATOR */
         .area-estimator-card {
             background: rgba(15, 23, 42, 0.95);
@@ -604,6 +643,43 @@
             font-size: 1.5rem;
             font-weight: 700;
             color: #38bdf8;
+        }
+
+        /* PHASE 8: BACKSCATTER TIME SERIES LAYOUT - two columns on desktop
+           (chart + animation frame side by side), stacking on narrow
+           screens. Both columns are bounded so neither the chart nor the
+           frame image can stretch to an extreme, blurry, or skewed size on
+           very wide displays. */
+        .ts-layout {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            align-items: flex-start;
+        }
+
+        .ts-chart-col,
+        .ts-frame-col {
+            flex: 1 1 360px;
+            max-width: 520px;
+            min-width: 280px;
+        }
+
+        .ts-chart-canvas {
+            width: 100%;
+            aspect-ratio: 16 / 7;
+            background: rgba(2, 6, 23, 0.4);
+            border-radius: 0.5rem;
+            display: block;
+        }
+
+        .ts-frame-image {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            object-fit: contain;
+            display: block;
+            border-radius: 0.5rem;
+            border: 1px solid rgba(51, 65, 85, 0.3);
+            background: rgba(2, 6, 23, 0.4);
         }
 
         /* PHASE 2B: INFRASTRUCTURE LAYERS */
@@ -1099,9 +1175,11 @@
                             <span class="confidence-star">Star</span>
                             <span class="confidence-value" id="confidenceScore">87%</span>
                             <span style="color: #94a3b8; font-size: 0.9rem;">Confidence</span>
+                            <button class="confidence-info-btn" id="confidenceInfoBtn" type="button"
+                                    title="Show what this confidence score is based on" aria-label="Show confidence details">i</button>
                         </div>
-                        
-                        <div id="qualityChecks">
+
+                        <div id="qualityChecks" style="display: none;">
                             <div class="quality-check pass">
                                 <span class="quality-icon">OK</span>
                                 <span>High Geometric Accuracy</span>
@@ -1193,20 +1271,24 @@
         <div class="area-estimator-card" id="timeSeriesCard" style="display: none;">
             <h3>Backscatter Time Series (real, multi-date)</h3>
 
-            <p id="timeSeriesNote" style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 1rem;"></p>
+            <p id="timeSeriesNote" style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem;"></p>
+            <p id="tsPeakNote" style="font-size: 0.85rem; color: #fbbf24; margin-bottom: 1rem; display: none;"></p>
 
-            <div id="timeSeriesContent" style="display: none;">
-                <canvas id="timeSeriesChart" width="760" height="180" style="width: 100%; height: 180px; background: rgba(2, 6, 23, 0.4); border-radius: 0.5rem;"></canvas>
-
-                <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem;">
-                    <button class="export-btn" id="tsPrevBtn" title="Previous date">&#8249;</button>
-                    <button class="export-btn" id="tsPlayBtn" title="Play/pause animation">&#9654;</button>
-                    <button class="export-btn" id="tsNextBtn" title="Next date">&#8250;</button>
-                    <span id="tsFrameLabel" style="color: #cbd5e1; font-size: 0.85rem;"></span>
-                    <a id="tsGifLink" href="#" download style="margin-left: auto; display: none;" class="export-btn">Download GIF</a>
+            <div id="timeSeriesContent" class="ts-layout" style="display: none;">
+                <div class="ts-chart-col">
+                    <canvas id="timeSeriesChart" width="760" height="220" class="ts-chart-canvas"></canvas>
                 </div>
 
-                <img id="tsFrameImage" alt="Backscatter animation frame" style="width: 100%; max-width: 420px; display: block; margin-top: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(51, 65, 85, 0.3);" />
+                <div class="ts-frame-col">
+                    <img id="tsFrameImage" alt="Backscatter animation frame" class="ts-frame-image" />
+                    <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem;">
+                        <button class="export-btn" id="tsPrevBtn" title="Previous date">&#8249;</button>
+                        <button class="export-btn" id="tsPlayBtn" title="Play/pause animation">&#9654;</button>
+                        <button class="export-btn" id="tsNextBtn" title="Next date">&#8250;</button>
+                        <span id="tsFrameLabel" style="color: #cbd5e1; font-size: 0.85rem;"></span>
+                        <a id="tsGifLink" href="#" download style="margin-left: auto; display: none;" class="export-btn">Download GIF</a>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1377,6 +1459,16 @@
             floodOverlay = await loadLayer(geojsonUrl, '#ff6b00');
             if (vegetationGeojsonUrl) {
                 vegetationFloodOverlay = await loadLayer(vegetationGeojsonUrl, '#39ff14');
+            }
+
+            // The flood/vegetation polygons are added to the map AFTER the
+            // search-radius buffer circle (which is drawn as soon as a
+            // location is picked, before any analysis exists), so Leaflet's
+            // default stacking would otherwise render them above the
+            // circle's outline - bring the circle back to the top so its
+            // boundary stays visible over the colored overlay.
+            if (locationCircle) {
+                locationCircle.bringToFront();
             }
 
             if (combinedBounds) {
@@ -2032,6 +2124,7 @@
             content.style.display = 'block';
 
             drawTimeSeriesChart(ts);
+            showPeakFloodNote(ts);
 
             if (ts.gif_url) {
                 const gifLink = document.getElementById('tsGifLink');
@@ -2044,10 +2137,45 @@
             updateTimeSeriesFrame();
         }
 
+        // The real mean-backscatter trend's lowest point is a reasonable,
+        // transparent proxy for "peak flooding" within the dates actually
+        // observed - open water strongly decreases L-band backscatter (the
+        // dominant real signature per NASA/JPL's "Floods" StoryMap), so the
+        // single lowest recorded value is a real, honestly-labeled
+        // indicator, not a validated hydrological flood-peak determination.
+        function showPeakFloodNote(ts) {
+            const peakNote = document.getElementById('tsPeakNote');
+            const values = ts.means_db;
+            if (!values || values.length === 0) {
+                peakNote.style.display = 'none';
+                return;
+            }
+            const minValue = Math.min(...values);
+            const minIndex = values.indexOf(minValue);
+            const dateLabel = (ts.dates[minIndex] || '').slice(0, 10);
+            peakNote.textContent =
+                `Lowest backscatter observed: ${dateLabel} (${minValue.toFixed(2)} dB) - often indicates peak ` +
+                `open-water flooding among the real dates found for this area.`;
+            peakNote.style.display = 'block';
+        }
+
         function drawTimeSeriesChart(ts) {
             const canvas = document.getElementById('timeSeriesChart');
             const ctx = canvas.getContext('2d');
-            const w = canvas.width, h = canvas.height;
+
+            // Match the canvas's internal pixel resolution to its actual
+            // rendered CSS size (at devicePixelRatio) instead of leaving it
+            // at a fixed bitmap size that the browser then stretches or
+            // shrinks to fit the responsive layout - that mismatch is what
+            // caused the blurry/skewed look on wide screens.
+            const dpr = window.devicePixelRatio || 1;
+            const cssWidth = canvas.clientWidth || 760;
+            const cssHeight = canvas.clientHeight || 220;
+            canvas.width = Math.round(cssWidth * dpr);
+            canvas.height = Math.round(cssHeight * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            const w = cssWidth, h = cssHeight;
             const padding = { left: 50, right: 15, top: 15, bottom: 25 };
             ctx.clearRect(0, 0, w, h);
 
@@ -2085,11 +2213,15 @@
             });
             ctx.stroke();
 
-            // Real data points
-            ctx.fillStyle = '#38bdf8';
+            // Real data points - the lowest-backscatter date (the real
+            // "peak flooding" proxy shown in the note below the chart) is
+            // highlighted distinctly from the rest.
+            const peakIndex = values.indexOf(Math.min(...values));
             values.forEach((v, i) => {
+                const isPeak = i === peakIndex;
+                ctx.fillStyle = isPeak ? '#fbbf24' : '#38bdf8';
                 ctx.beginPath();
-                ctx.arc(xFor(i), yFor(v), 3, 0, Math.PI * 2);
+                ctx.arc(xFor(i), yFor(v), isPeak ? 5 : 3, 0, Math.PI * 2);
                 ctx.fill();
             });
 
@@ -2099,6 +2231,16 @@
             ctx.fillText((ts.dates[0] || '').slice(0, 10), xFor(0) - 15, h - 6);
             ctx.fillText((ts.dates[ts.dates.length - 1] || '').slice(0, 10), xFor(values.length - 1) - 35, h - 6);
         }
+
+        // Canvas resolution is tied to its rendered CSS size (see
+        // drawTimeSeriesChart), so a window resize/reflow needs a redraw -
+        // debounced since resize fires continuously while dragging.
+        let tsResizeTimer = null;
+        window.addEventListener('resize', () => {
+            if (!tsCurrentData) return;
+            clearTimeout(tsResizeTimer);
+            tsResizeTimer = setTimeout(() => drawTimeSeriesChart(tsCurrentData), 200);
+        });
 
         function updateTimeSeriesFrame() {
             const ts = tsCurrentData;
@@ -2213,10 +2355,21 @@
                 const rect = swipeContainer.getBoundingClientRect();
                 const x = clientX - rect.left;
                 const percentage = Math.max(0, Math.min(100, (x / rect.width) * 100));
-
-                swipeHandle.style.left = percentage + '%';
-                swipeBeforeImage.style.width = percentage + '%';
+                setSwipePosition(percentage);
             }
+        }
+
+        // Moves the swipe handle/reveal to a given percentage (0-100) without
+        // resizing either image element - both images stay at their full,
+        // identical size/scale at all times; only the clip-path on the
+        // before-layer changes, which is what keeps the comparison stable
+        // (no zoom/pan drift) while dragging.
+        function setSwipePosition(percentage) {
+            const swipeHandle = document.getElementById('swipeHandle');
+            const swipeBeforeImage = document.getElementById('swipeBeforeImage');
+            if (!swipeHandle || !swipeBeforeImage) return;
+            swipeHandle.style.left = percentage + '%';
+            swipeBeforeImage.style.clipPath = `inset(0 ${100 - percentage}% 0 0)`;
         }
 
         // PHASE 7: SHOW SWIPE VIEW WITH REAL NISAR IMAGERY (rendered server-side
@@ -2274,6 +2427,7 @@
                          alt="Post-Flood NISAR Backscatter with Real Inundation Overlay">
                 `;
 
+                setSwipePosition(50);
                 inundationLegend.style.display = 'block';
             } catch (error) {
                 console.error('Error rendering real NISAR imagery:', error);
@@ -2297,6 +2451,7 @@
             const confidenceBadge = document.getElementById('confidenceBadge');
             const confidenceScore = document.getElementById('confidenceScore');
             const qualityChecks = document.getElementById('qualityChecks');
+            const confidenceInfoBtn = document.getElementById('confidenceInfoBtn');
 
             if (!confidenceBadge || !confidenceScore || !qualityChecks) return;
 
@@ -2314,6 +2469,11 @@
                     <span>${check.label}</span>
                 </div>
             `).join('');
+
+            // Collapsed by default for every new result - a stale expanded
+            // state from a previous search shouldn't carry over.
+            qualityChecks.style.display = 'none';
+            if (confidenceInfoBtn) confidenceInfoBtn.classList.remove('active');
 
             if (currentSearchContext) {
                 currentSearchContext.confidence = detectionConfidence.confidence;
@@ -2809,6 +2969,17 @@ ${placemarks}
                 toggle.addEventListener('change', (e) => {
                     toggleInfrastructureLayer(e.target);
                 });
+            });
+
+            // GIS-style corner info icon: the confidence quality-check
+            // breakdown is collapsed by default (see updateConfidenceBadge)
+            // so it doesn't compete with the backscatter legend in the
+            // opposite corner; clicking the "i" button reveals it.
+            document.getElementById('confidenceInfoBtn').addEventListener('click', (e) => {
+                const qualityChecks = document.getElementById('qualityChecks');
+                const isOpen = qualityChecks.style.display !== 'none';
+                qualityChecks.style.display = isOpen ? 'none' : 'block';
+                e.currentTarget.classList.toggle('active', !isOpen);
             });
 
             // Phase 8: Add event listeners for the real backscatter
