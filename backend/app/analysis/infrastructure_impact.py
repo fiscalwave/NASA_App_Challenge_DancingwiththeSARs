@@ -17,6 +17,7 @@ with estimates.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -103,6 +104,18 @@ GEOAPIFY_CATEGORIES: Dict[str, str] = {
 GEOAPIFY_PAGE_SIZE = 200
 GEOAPIFY_MAX_PAGES = 3  # up to 600 real features - 3 credits/call, cheap within the 3,000/day free budget
 
+# compute_infrastructure_impact() fetches up to 4 Geoapify-eligible
+# categories CONCURRENTLY (see its ThreadPoolExecutor), and each category
+# can issue up to GEOAPIFY_MAX_PAGES sequential page requests - without a
+# shared throttle, 4 categories' Overpass timeouts expiring at nearly the
+# same moment can burst well past Geoapify's free-tier "5 requests/second"
+# limit (observed directly this session: a real production recompute hit a
+# real external failure here even though each category worked fine when
+# tested serially). Bounding GLOBAL concurrent Geoapify HTTP calls to 2
+# keeps bursts safely under that limit regardless of how many categories
+# fail over to it at once.
+_GEOAPIFY_CONCURRENCY = threading.Semaphore(2)
+
 
 def _query_geoapify(category: str, bbox: Tuple[float, float, float, float], timeout: int = 20) -> Dict[str, Any]:
     """
@@ -133,7 +146,8 @@ def _query_geoapify(category: str, bbox: Tuple[float, float, float, float], time
             "apiKey": api_key,
         }
         try:
-            resp = requests.get("https://api.geoapify.com/v2/places", params=params, timeout=timeout)
+            with _GEOAPIFY_CONCURRENCY:
+                resp = requests.get("https://api.geoapify.com/v2/places", params=params, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:

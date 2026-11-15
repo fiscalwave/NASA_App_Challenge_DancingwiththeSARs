@@ -1657,14 +1657,29 @@ async def get_impact_status(analysis_id: str):
 
     if impact_path.exists():
         cached = _load_json_safe(impact_path)
-        if cached is not None:
+        if cached is not None and _impact_categories_displayed_are_ok(cached.get("infrastructure_impact", {})):
             cached["cached"] = True
             return cached
+        # Stale/incomplete on-disk file (see POST handler's comment) - do NOT
+        # short-circuit here either. Check the in-memory job below, which
+        # reflects whatever recompute POST most recently kicked off -
+        # otherwise a caller polling this endpoint would always get the old
+        # stale file back on its very first poll and never see real,
+        # in-progress recomputation reflected at all.
 
     with _job_lock:
         job = _impact_jobs.get(analysis_id)
 
     if job is None:
+        if impact_path.exists():
+            # No in-memory job (e.g. server restarted) and the only thing on
+            # disk is a known-stale file - still better to show it than a
+            # bare 404, but flag it honestly rather than imply it's current.
+            cached = _load_json_safe(impact_path)
+            if cached is not None:
+                cached["cached"] = True
+                cached["stale"] = True
+                return cached
         raise HTTPException(status_code=404, detail="No impact analysis found or in progress for this analysis_id")
 
     if job.get("status") == "failed":
