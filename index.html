@@ -1427,12 +1427,13 @@
                     <tr>
                         <th>Scene ID</th>
                         <th>Acquisition Date</th>
+                        <th>Time (UTC)</th>
                         <th>Description</th>
                     </tr>
                 </thead>
                 <tbody id="sceneTableBody">
                     <tr>
-                        <td colspan="3" class="placeholder-text">Scenes will appear here</td>
+                        <td colspan="4" class="placeholder-text">Scenes will appear here</td>
                     </tr>
                 </tbody>
             </table>
@@ -1863,7 +1864,7 @@
             const section = document.getElementById('resultsSection');
             section.style.display = 'block';
             const tbody = document.getElementById('sceneTableBody');
-            tbody.innerHTML = `<tr><td colspan="3" class="placeholder-text">${message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="4" class="placeholder-text">${message}</td></tr>`;
             section.scrollIntoView({ behavior: 'smooth' });
         }
 
@@ -2323,19 +2324,37 @@
 
         // Populate the "Available NISAR Acquisitions" table with the REAL
         // granules returned by /api/v2/discover (not a fixed/fabricated list).
+        // Splits a real ISO acquisition timestamp (e.g.
+        // "2026-06-26T21:55:28.000Z") into separate date and time parts for
+        // the acquisitions table's two columns. Never fabricates a value -
+        // falls back to '-' for whichever part isn't present in the real
+        // string (e.g. a date-only string has no time component).
+        function splitAcquisitionDateTime(timeStart) {
+            if (!timeStart || timeStart === '-') return { date: '-', time: '-' };
+            const [datePart, timePart] = String(timeStart).split('T');
+            if (!timePart) return { date: datePart, time: '-' };
+            // "21:55:28.000Z" -> "21:55:28 UTC"
+            const seconds = timePart.replace(/\.\d+Z?$/, '').replace(/Z$/, '');
+            return { date: datePart, time: `${seconds} UTC` };
+        }
+
         function populateAcquisitionsTable(granules) {
             const tbody = document.getElementById('sceneTableBody');
             if (!granules || granules.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="3" class="placeholder-text">No real NISAR scenes found for this area and date range</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="4" class="placeholder-text">No real NISAR scenes found for this area and date range</td></tr>`;
                 return;
             }
-            tbody.innerHTML = granules.map(g => `
+            tbody.innerHTML = granules.map(g => {
+                const { date, time } = splitAcquisitionDateTime(g.time_start);
+                return `
                 <tr>
                     <td>${g.granule_id}</td>
-                    <td>${g.time_start}</td>
+                    <td>${date}</td>
+                    <td>${time}</td>
                     <td>Track ${g.track} / Frame ${g.frame} / ${g.pass_direction} - ${g.tier} tier</td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
         }
 
         async function displayRealResults(summary, impact) {
