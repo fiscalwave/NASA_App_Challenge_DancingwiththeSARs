@@ -6,6 +6,20 @@
 
 An open-source interactive web application for flood and wetland surface-change detection using real NASA-ISRO SAR (NISAR) satellite data — zero mock/synthetic/fabricated data anywhere in the pipeline. Every number, image, and polygon shown in the UI is derived from an actual downloaded NISAR L2 GCOV granule processed on demand.
 
+## Team
+
+Created by **VA**ibhav Parikh, **MI**chelle Dailey, and **KA**tie Hornsby.
+
+## Project Summary
+
+VAMIKA is an interactive application that uses NASA-ISRO NISAR's L-band synthetic aperture radar to track and visualize flood and wetland surface change at locations worldwide — from Jakarta's monsoon flooding to the Brahmaputra's shifting river islands to the Pantanal's seasonal flood pulse.
+
+We built a real change-detection pipeline: users compare before/after NISAR GCOV backscatter across multiple polarizations (HH, HV, VV, VH), with a draggable satellite comparison slider, multi-date time-series animation, and automated classification distinguishing open water (lower dielectric-driven backscatter) from flooded vegetation (double-bounce backscatter increase) — exploiting exactly the roughness/dielectric sensitivity that makes radar uniquely suited to flood mapping day or night, through cloud cover.
+
+Beyond visualization, VAMIKA translates radar observations into actionable insight: it cross-references the detected flood extent with live OpenStreetMap infrastructure data to flag exposed hospitals, schools, and roads, and generates an explainable priority score and exportable Emergency Information report.
+
+This matters because SAR's unique all-weather capability is most valuable precisely when optical satellites fail — during active disasters — yet that data rarely reaches decision-makers fast enough. VAMIKA closes that gap with honest, real-data-only, immediately usable intelligence.
+
 ## Try it now
 
 | Deployment | URL | Notes |
@@ -74,9 +88,11 @@ VAMIKA lets anyone — emergency managers, researchers, educators, or the public
 ## Features
 
 - **Real NASA CMR discovery** across NISAR's three data-maturity tiers (Validated/Provisional/Beta), honestly reporting zero results rather than ever substituting mock data
-- **Real before/after SAR swipe comparison**, rendered server-side from actual downloaded GCOV HDF5 pixel data
+- **Real before/after SAR swipe comparison**, rendered server-side from actual downloaded GCOV HDF5 pixel data, with real acquisition dates labeled on each side
 - **Dual flood-signature detection**: open water (radar-dark) and flooded vegetation (radar-bright, double-bounce) — see [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) for the science
-- **Real infrastructure impact** (hospitals, settlements, roads, power plants) via live OpenStreetMap/Overpass spatial intersection, with an explainable, rule-based priority score
+- **Real multi-date backscatter time series** — an animated frame-by-frame view across every real acquisition found for the AOI, with a synchronized chart and an auto-flagged "peak flooding" date (NISAR Cookbook time-series/animation pattern)
+- **Real infrastructure impact** (hospitals, schools, settlements, roads, power plants) via live OpenStreetMap/Overpass spatial intersection with a Geoapify fallback, feeding an explainable, rule-based priority score
+- **One-click Emergency Information dashboard** — assembles every real result (flood stats, priority factors, infrastructure exposure, map snapshot) into a single report, exportable as PDF for field responders
 - **Featured Locations**: a curated set of real, globally diverse flood/wetland-significant places, pre-computed for instant loading (see `backend/scripts/preseed_featured_locations.py`)
 - **Polarization selector** and **multi-date pair selector** when NASA CMR finds more than one compatible real acquisition pair
 - **Honest confidence scoring** — a transparent, rule-based score derived from real statistics (acquisition geometry match, noise level, observation age, candidate-pixel count), explicitly not a fabricated probability
