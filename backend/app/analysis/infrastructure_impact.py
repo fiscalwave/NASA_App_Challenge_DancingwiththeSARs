@@ -24,6 +24,7 @@ import requests
 from pyproj import Transformer
 from shapely.geometry import LineString, Point, Polygon, shape
 from shapely.ops import unary_union, transform as shapely_transform
+from shapely.prepared import prep
 from shapely.validation import make_valid
 
 from app.utils.errors import DataIngestionError
@@ -331,6 +332,17 @@ def compute_infrastructure_impact(
         # intersections even from an already-valid source geometry.
         flood_union_proj = make_valid(flood_union_proj)
 
+    # Real detected flood polygons for large/dense AOIs (e.g. a megacity's
+    # full flood extent) can have thousands of vertices. Every category
+    # below tests every one of its real features against this same flood
+    # polygon, so without a spatial index each .intersects()/.within()
+    # call re-walks the whole boundary - for a city with hundreds of real
+    # settlements/roads this makes the per-category loops below take
+    # minutes instead of seconds. shapely's prepared-geometry wrapper
+    # builds that index once and reuses it for every subsequent query
+    # against the same base geometry.
+    flood_prepared = prep(flood_union_proj)
+
     # Fetch all categories concurrently. Each category's real-source chain
     # (Overpass mirror failover, then the Geoapify fallback if configured)
     # is network-bound and independent of the others, so running them
@@ -379,7 +391,7 @@ def compute_infrastructure_impact(
                 proj_geom = to_proj(geom)
                 length_km = proj_geom.length / 1000.0
                 total_length_km += length_km
-                if proj_geom.intersects(flood_union_proj):
+                if flood_prepared.intersects(proj_geom):
                     intersecting_segment = proj_geom.intersection(flood_union_proj)
                     intersecting_length_km += intersecting_segment.length / 1000.0
                     intersecting_count += 1
@@ -397,7 +409,11 @@ def compute_infrastructure_impact(
             for geom, tags in geoms_4326:
                 proj_geom = to_proj(geom)
                 name = tags.get("name", f"Unnamed {category[:-1] if category.endswith('s') else category}")
-                if proj_geom.within(flood_union_proj) or proj_geom.intersects(flood_union_proj):
+                # within(X) is always a subset of intersects(X) for any
+                # non-empty geometry, so testing intersects alone via the
+                # prepared index is equivalent to the original "within or
+                # intersects" check while using the fast indexed path.
+                if flood_prepared.intersects(proj_geom):
                     within_flood.append({"name": name, "lat": geom.y, "lon": geom.x, "distance_km": 0.0})
                 else:
                     dist_km = proj_geom.distance(flood_union_proj) / 1000.0
