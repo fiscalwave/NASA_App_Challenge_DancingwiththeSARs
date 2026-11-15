@@ -477,6 +477,19 @@
             border: 1px solid rgba(56, 189, 248, 0.2);
             min-width: 280px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            transition: padding 0.15s ease, min-width 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+        }
+
+        /* Collapsed state: shrink the badge down to just the red info
+           button itself (no background/border/padding box around it) so it
+           reads as a single small corner icon, not a panel, until clicked. */
+        .confidence-badge.collapsed {
+            padding: 0;
+            min-width: 0;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            backdrop-filter: none;
         }
 
         .confidence-header {
@@ -486,6 +499,22 @@
             margin-bottom: 1rem;
             padding-bottom: 1rem;
             border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+        }
+
+        /* Collapsed state: the header is just the red info button (the
+           Star/score/"Confidence" text is hidden via .confidence-summary
+           below), so the divider line and spacing read as a stray
+           underline/empty box rather than a header - remove both. */
+        .confidence-badge.collapsed .confidence-header {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .confidence-summary {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
 
         .confidence-star {
@@ -528,17 +557,21 @@
         /* Collapsed-by-default confidence details: GIS-style corner info
            icon reveals the quality-check breakdown on click instead of
            always showing it, so the badge doesn't compete for attention
-           with the backscatter legend on the opposite corner. */
+           with the backscatter legend on the opposite corner. Red so it
+           reads as a distinct, attention-grabbing "more info" affordance
+           in the corner, separate from the blue/green data colors used
+           elsewhere in this badge. */
         .confidence-info-btn {
             margin-left: auto;
-            width: 1.3rem;
-            height: 1.3rem;
+            width: 1.4rem;
+            height: 1.4rem;
             border-radius: 50%;
-            border: 1px solid rgba(148, 163, 184, 0.5);
-            background: transparent;
-            color: #94a3b8;
-            font-size: 0.75rem;
+            border: 1.5px solid #ef4444;
+            background: rgba(239, 68, 68, 0.12);
+            color: #ef4444;
+            font-size: 0.8rem;
             font-style: italic;
+            font-weight: 700;
             font-family: Georgia, serif;
             line-height: 1;
             cursor: pointer;
@@ -546,14 +579,14 @@
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
-            transition: background 0.15s ease, color 0.15s ease;
+            transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
         }
 
         .confidence-info-btn:hover,
         .confidence-info-btn.active {
-            background: rgba(56, 189, 248, 0.2);
-            color: #38bdf8;
-            border-color: #38bdf8;
+            background: #ef4444;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
         }
 
         /* PHASE 2A: AFFECTED AREA ESTIMATOR */
@@ -649,12 +682,17 @@
            (chart + animation frame side by side), stacking on narrow
            screens. Both columns are bounded so neither the chart nor the
            frame image can stretch to an extreme, blurry, or skewed size on
-           very wide displays. */
+           very wide displays. Both the chart and the frame image share the
+           same fixed height (--ts-row-height) instead of their own
+           independent aspect-ratios, so the two columns line up as equal-
+           height rows rather than the chart (wide/short) and the square
+           GIF frame (tall) ending at different heights.*/
         .ts-layout {
             display: flex;
             flex-wrap: wrap;
             gap: 1.5rem;
-            align-items: flex-start;
+            align-items: stretch;
+            --ts-row-height: clamp(220px, 28vw, 340px);
         }
 
         .ts-chart-col,
@@ -666,7 +704,7 @@
 
         .ts-chart-canvas {
             width: 100%;
-            aspect-ratio: 16 / 7;
+            height: var(--ts-row-height);
             background: rgba(2, 6, 23, 0.4);
             border-radius: 0.5rem;
             display: block;
@@ -674,7 +712,7 @@
 
         .ts-frame-image {
             width: 100%;
-            aspect-ratio: 1 / 1;
+            height: var(--ts-row-height);
             object-fit: contain;
             display: block;
             border-radius: 0.5rem;
@@ -1169,12 +1207,17 @@
                         </div>
                     </div>
                     
-                    <!-- CONFIDENCE BADGE -->
-                    <div class="confidence-badge" id="confidenceBadge" style="display: none;">
+                    <!-- CONFIDENCE BADGE: collapsed by default to just the
+                         red "i" button (see .confidence-badge.collapsed) -
+                         clicking it reveals the Star/score/"Confidence"
+                         summary AND the quality-check breakdown together. -->
+                    <div class="confidence-badge collapsed" id="confidenceBadge" style="display: none;">
                         <div class="confidence-header">
-                            <span class="confidence-star">Star</span>
-                            <span class="confidence-value" id="confidenceScore">87%</span>
-                            <span style="color: #94a3b8; font-size: 0.9rem;">Confidence</span>
+                            <span class="confidence-summary" id="confidenceSummary" style="display: none;">
+                                <span class="confidence-star">Star</span>
+                                <span class="confidence-value" id="confidenceScore">87%</span>
+                                <span style="color: #94a3b8; font-size: 0.9rem;">Confidence</span>
+                            </span>
                             <button class="confidence-info-btn" id="confidenceInfoBtn" type="button"
                                     title="Show what this confidence score is based on" aria-label="Show confidence details">i</button>
                         </div>
@@ -2450,6 +2493,7 @@
         function updateConfidenceBadge(detectionConfidence) {
             const confidenceBadge = document.getElementById('confidenceBadge');
             const confidenceScore = document.getElementById('confidenceScore');
+            const confidenceSummary = document.getElementById('confidenceSummary');
             const qualityChecks = document.getElementById('qualityChecks');
             const confidenceInfoBtn = document.getElementById('confidenceInfoBtn');
 
@@ -2471,7 +2515,12 @@
             `).join('');
 
             // Collapsed by default for every new result - a stale expanded
-            // state from a previous search shouldn't carry over.
+            // state from a previous search shouldn't carry over. Only the
+            // red "i" button is visible until the user clicks it; that
+            // click reveals the Star/score/"Confidence" summary AND the
+            // quality-check breakdown together (see the click handler).
+            confidenceBadge.classList.add('collapsed');
+            if (confidenceSummary) confidenceSummary.style.display = 'none';
             qualityChecks.style.display = 'none';
             if (confidenceInfoBtn) confidenceInfoBtn.classList.remove('active');
 
@@ -2971,13 +3020,22 @@ ${placemarks}
                 });
             });
 
-            // GIS-style corner info icon: the confidence quality-check
-            // breakdown is collapsed by default (see updateConfidenceBadge)
-            // so it doesn't compete with the backscatter legend in the
-            // opposite corner; clicking the "i" button reveals it.
+            // GIS-style corner info icon: everything else in the confidence
+            // badge (the "Star 80% Confidence" summary AND the quality-check
+            // breakdown) is collapsed by default (see updateConfidenceBadge)
+            // so only the red "i" button is visible, keeping this corner
+            // from competing with the backscatter legend in the opposite
+            // one; clicking the button reveals the summary and the
+            // breakdown together, and expands the badge's background/border
+            // back to a normal panel.
             document.getElementById('confidenceInfoBtn').addEventListener('click', (e) => {
+                const confidenceBadge = document.getElementById('confidenceBadge');
+                const confidenceSummary = document.getElementById('confidenceSummary');
                 const qualityChecks = document.getElementById('qualityChecks');
                 const isOpen = qualityChecks.style.display !== 'none';
+
+                confidenceBadge.classList.toggle('collapsed', isOpen);
+                confidenceSummary.style.display = isOpen ? 'none' : 'flex';
                 qualityChecks.style.display = isOpen ? 'none' : 'block';
                 e.currentTarget.classList.toggle('active', !isOpen);
             });
