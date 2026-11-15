@@ -24,6 +24,7 @@ import requests
 from pyproj import Transformer
 from shapely.geometry import LineString, Point, Polygon, shape
 from shapely.ops import unary_union, transform as shapely_transform
+from shapely.validation import make_valid
 
 from app.utils.errors import DataIngestionError
 from app.utils.logging import get_logger
@@ -310,10 +311,25 @@ def compute_infrastructure_impact(
             "categories": {},
         }
 
+    # Real detected flood polygons occasionally come out of the marching-
+    # squares contouring step with tiny self-intersections (bowtie rings),
+    # which GEOS considers topologically invalid. Spatial predicates like
+    # .intersects()/.within()/.intersection() against such a polygon can
+    # raise a TopologyException ("side location conflict") rather than
+    # just silently working - so the polygon is repaired via the OGC
+    # make_valid algorithm before any spatial operation. This corrects the
+    # geometry's topology only; it does not fabricate or alter the real
+    # detected flood extent.
     flood_union_4326 = unary_union(flood_geoms_4326)
+    if not flood_union_4326.is_valid:
+        flood_union_4326 = make_valid(flood_union_4326)
 
     to_proj = _build_reprojector("EPSG:4326", analysis_crs)
     flood_union_proj = to_proj(flood_union_4326)
+    if not flood_union_proj.is_valid:
+        # Reprojection can itself reintroduce tiny floating-point self-
+        # intersections even from an already-valid source geometry.
+        flood_union_proj = make_valid(flood_union_proj)
 
     # Fetch all categories concurrently. Each category's real-source chain
     # (Overpass mirror failover, then the Geoapify fallback if configured)
