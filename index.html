@@ -2121,7 +2121,7 @@
 
             note.textContent = `Real track ${ts.track}/frame ${ts.frame} (${ts.pass_direction}): ` +
                 `${ts.dates.length} of ${ts.total_in_group} real acquisition(s) found since this AOI's coverage began.`;
-            content.style.display = 'block';
+            content.style.display = 'flex';
 
             drawTimeSeriesChart(ts);
             showPeakFloodNote(ts);
