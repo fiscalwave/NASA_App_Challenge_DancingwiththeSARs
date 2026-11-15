@@ -458,17 +458,35 @@ def compute_infrastructure_impact(
         processing_executor.submit(_process_category, category, spec): category
         for category, spec in INFRA_QUERIES.items()
     }
-    for future, category in future_to_category.items():
+    # concurrent.futures.wait() applies its timeout once, across *all*
+    # futures together (they're already running in parallel) - calling
+    # future.result(timeout=T) in a per-future loop instead would wait up
+    # to T seconds for each one in turn, giving a worst case of T times
+    # the number of categories instead of a single real T-second budget.
+    done, not_done = concurrent.futures.wait(
+        future_to_category.keys(),
+        timeout=CATEGORY_PROCESSING_TIMEOUT_SECONDS,
+        return_when=concurrent.futures.ALL_COMPLETED,
+    )
+    for future in done:
+        category = future_to_category[future]
         try:
-            categories[category] = future.result(timeout=CATEGORY_PROCESSING_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError:
+            categories[category] = future.result()
+        except Exception as e:
             categories[category] = {
                 "status": "unavailable",
-                "error": f"Spatial analysis did not complete within {CATEGORY_PROCESSING_TIMEOUT_SECONDS}s",
-                "note": "Real OpenStreetMap data was fetched for this category, but analyzing it against the "
-                        "detected flood polygon took too long (unusually large/complex real dataset for this "
-                        "area) - reporting unavailable rather than blocking every other category's real results.",
+                "error": str(e),
+                "note": "Real data processing for this category raised an error; reporting unavailable rather than fabricating results.",
             }
+    for future in not_done:
+        category = future_to_category[future]
+        categories[category] = {
+            "status": "unavailable",
+            "error": f"Spatial analysis did not complete within {CATEGORY_PROCESSING_TIMEOUT_SECONDS}s",
+            "note": "Real OpenStreetMap data was fetched for this category, but analyzing it against the "
+                    "detected flood polygon took too long (unusually large/complex real dataset for this "
+                    "area) - reporting unavailable rather than blocking every other category's real results.",
+        }
     processing_executor.shutdown(wait=False)
 
     return {"status": "success", "categories": categories}
