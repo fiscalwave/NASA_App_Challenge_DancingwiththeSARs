@@ -1455,6 +1455,32 @@ async def get_analysis_visual(analysis_id: str, layer: str):
 # explainable priority scoring, built on real Phase 5 output, /api/v2/*)
 # ============================================================================
 
+def _impact_categories_displayed_are_ok(impact: Dict[str, Any]) -> bool:
+    """
+    True only if every infrastructure category the UI actually displays
+    (hospitals, settlements, roads - the same three priority.py scores) has
+    a real, definitive answer ("ok" or "no_features_found"), or the flood
+    polygon was genuinely empty. Schools/power_plants are fetched but never
+    shown, so their outcome doesn't affect this.
+
+    Used both to decide whether a freshly-computed result is cache-worthy,
+    AND to decide whether an EXISTING cached impact.json is still trustworthy
+    enough to serve directly - guards against a real bug this session where
+    an old gate ("cache if ANY of the 5 categories succeeded") let one
+    incidental success (e.g. schools legitimately having zero real
+    features) cache-freeze a displayed category at "unavailable" forever,
+    even after a later fix (the Geoapify fallback) made real data available
+    again.
+    """
+    if impact.get("status") == "no_flood_detected":
+        return True
+    categories = impact.get("categories", {})
+    return all(
+        categories.get(cat, {}).get("status") in ("ok", "no_features_found")
+        for cat in ("hospitals", "settlements", "roads")
+    )
+
+
 def _run_real_impact(
     analysis_id: str, result_dir: Path, summary_path: Path,
     flood_geojson_path: Path, veg_geojson_path: Path, impact_path: Path,
@@ -1514,23 +1540,21 @@ def _run_real_impact(
             "priority": priority,
         }
 
-        # Only persist to disk if OpenStreetMap actually returned usable data
-        # for at least one category (or the flood polygon was genuinely
-        # empty). If every category failed - e.g. all 3 Overpass mirrors were
-        # rate-limited - that is a transient network condition, not a real
-        # analysis result, so we deliberately do not cache it and allow the
-        # next call to retry.
-        categories = impact.get("categories", {})
-        has_real_data = impact.get("status") == "no_flood_detected" or any(
-            cat.get("status") in ("ok", "no_features_found") for cat in categories.values()
-        )
+        # Only persist to disk once every category actually SHOWN in the UI
+        # (hospitals, settlements, roads) has a real, definitive answer -
+        # see _impact_categories_displayed_are_ok() for why this matters
+        # beyond the original "total outage" case.
+        has_real_data = _impact_categories_displayed_are_ok(impact)
         if has_real_data:
             with open(impact_path, "w") as f:
                 json.dump(result, f, indent=2)
             if upload_analysis_result:
                 upload_analysis_result(analysis_id, result_dir)
         else:
-            result["note"] = "Not cached: all OpenStreetMap categories were unavailable (transient network failure). Retry the request."
+            result["note"] = (
+                "Not cached: at least one displayed category (hospitals/settlements/roads) "
+                "was unavailable (transient OpenStreetMap/Overpass/Geoapify issue). Retry the request."
+            )
 
         with _job_lock:
             _impact_jobs[analysis_id] = {"status": "success", "result": result}
@@ -1593,8 +1617,18 @@ async def analyze_infrastructure_impact(analysis_id: str):
     if impact_path.exists():
         cached = _load_json_safe(impact_path)
         if cached is not None:
-            cached["cached"] = True
-            return cached
+            if _impact_categories_displayed_are_ok(cached.get("infrastructure_impact", {})):
+                cached["cached"] = True
+                return cached
+            # A real bug this session: an older caching rule let one
+            # incidental success among 5 fetched categories (e.g. schools
+            # having zero real features) freeze a DISPLAYED category
+            # (hospitals/settlements/roads) at "unavailable" forever, even
+            # after a later fix (the Geoapify fallback) made real data
+            # available again. An on-disk file from before that fix can
+            # still be sitting here - don't trust it; fall through and
+            # recompute for real instead of serving stale N/A values.
+            print(f"Ignoring stale/incomplete cached impact result for {analysis_id} (recomputing)")
 
     with _job_lock:
         existing = _impact_jobs.get(analysis_id)

@@ -1032,6 +1032,168 @@
             color: #0ea5e9;
         }
 
+        /* PHASE 9: EMERGENCY INFORMATION DASHBOARD */
+        .emergency-info-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            width: 100%;
+            margin-top: 1.25rem;
+            padding: 1rem;
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.25), rgba(220, 38, 38, 0.15));
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            border-radius: 0.75rem;
+            color: #fecaca;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            transition: background 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .emergency-info-btn:hover {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.4), rgba(220, 38, 38, 0.25));
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.35);
+        }
+
+        .emergency-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(2, 6, 23, 0.85);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            overflow-y: auto;
+            padding: 2rem 1rem;
+        }
+
+        .emergency-panel {
+            background: #0f172a;
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            border-radius: 1rem;
+            max-width: 900px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+            overflow: hidden;
+        }
+
+        .emergency-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.25rem 1.5rem;
+            background: linear-gradient(135deg, #b91c1c, #7f1d1d);
+            color: #fff;
+        }
+
+        .emergency-header h2 {
+            font-size: 1.3rem;
+            margin: 0;
+        }
+
+        .emergency-header-actions {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        .emergency-header-actions button {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: #fff;
+            border-radius: 0.5rem;
+            padding: 0.5rem 0.9rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .emergency-header-actions button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .emergency-body {
+            padding: 1.5rem;
+            color: #e2e8f0;
+        }
+
+        .emergency-body h3 {
+            font-size: 1rem;
+            color: #fca5a5;
+            margin: 1.5rem 0 0.75rem;
+            padding-bottom: 0.4rem;
+            border-bottom: 1px solid rgba(239, 68, 68, 0.25);
+        }
+
+        .emergency-body h3:first-child {
+            margin-top: 0;
+        }
+
+        .emergency-meta {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
+        }
+
+        .emergency-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .emergency-stat {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            border-radius: 0.6rem;
+            padding: 0.75rem;
+        }
+
+        .emergency-stat .emergency-stat-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+        }
+
+        .emergency-stat .emergency-stat-value {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #f1f5f9;
+        }
+
+        .emergency-factor {
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px dashed rgba(51, 65, 85, 0.4);
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        .emergency-factor:last-child {
+            border-bottom: none;
+        }
+
+        .emergency-factor .emergency-factor-points {
+            flex-shrink: 0;
+            font-weight: 700;
+            color: #38bdf8;
+        }
+
+        .emergency-limitations {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            line-height: 1.5;
+        }
+
+        .emergency-map-image {
+            width: 100%;
+            border-radius: 0.6rem;
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            display: block;
+        }
+
         /* RESPONSIVE */
         @media (max-width: 768px) {
             main {
@@ -1312,6 +1474,11 @@
                     </div>
                 </div>
             </div>
+
+            <!-- PHASE 9: EMERGENCY INFORMATION DASHBOARD TRIGGER -->
+            <button class="emergency-info-btn" id="emergencyInfoBtn" type="button">
+                Emergency Information
+            </button>
         </div>
 
         <!-- PHASE 8: REAL BACKSCATTER TIME SERIES (ASF OpenSARlab NISAR
@@ -1445,6 +1612,23 @@
         <p>NASA International Space Apps Challenge | Disaster Response Technology</p>
     </footer>
 
+    <!-- PHASE 9: EMERGENCY INFORMATION DASHBOARD (populated/shown by
+         openEmergencyDashboard(); content assembled from the already-
+         computed real analysis/impact data in currentSearchContext - no
+         new data is fetched when this opens) -->
+    <div class="emergency-overlay" id="emergencyOverlay" style="display: none;">
+        <div class="emergency-panel">
+            <div class="emergency-header">
+                <h2>Emergency Information</h2>
+                <div class="emergency-header-actions">
+                    <button id="emergencyDownloadPdfBtn" type="button">Download PDF</button>
+                    <button id="emergencyCloseBtn" type="button" aria-label="Close">&times;</button>
+                </div>
+            </div>
+            <div class="emergency-body" id="emergencyBody"></div>
+        </div>
+    </div>
+
     <script>
         // Map initialization
         let map, locationCircle, locationMarker, floodOverlay, vegetationFloodOverlay;
@@ -1544,6 +1728,11 @@
             }
             tsCurrentData = null;
             tsCurrentIndex = 0;
+
+            // Close the Emergency Information dashboard if it's open - its
+            // content belongs to the search this reset is clearing away.
+            const emergencyOverlay = document.getElementById('emergencyOverlay');
+            if (emergencyOverlay) emergencyOverlay.style.display = 'none';
 
             document.getElementById('locationInput').value = '';
             document.getElementById('radiusInput').value = '10';
@@ -2090,6 +2279,11 @@
                     );
                     if (generation !== searchGeneration) return; // superseded
                     renderRealAffectedArea(summary, impact);
+                    // Keep the full real impact object (including the
+                    // priority breakdown and every fetched category, even
+                    // the ones not shown on the Affected Area card) for the
+                    // Emergency Information dashboard.
+                    if (currentSearchContext) currentSearchContext.impact = impact;
                 } catch (impactError) {
                     console.warn('Infrastructure impact unavailable:', impactError);
                     if (generation === searchGeneration) {
@@ -2364,6 +2558,10 @@
             await renderRealFloodOverlay(summary.geojson.possible_flood, summary.geojson.possible_flooded_vegetation);
             updateConfidenceBadge(summary.detection_confidence);
             renderRealAffectedArea(summary, impact);
+            // Keep the full real summary around (not just the fields the
+            // on-page cards read) so the Emergency Information dashboard can
+            // assemble its report later without re-fetching anything.
+            currentSearchContext.summary = summary;
 
             // Store the real flood GeoJSON (both open-water and flooded-
             // vegetation signatures, combined) for honest exports (replaces
@@ -2629,6 +2827,166 @@
             }
 
             document.getElementById('areaEstimatorCard').style.display = 'block';
+        }
+
+        // ========== PHASE 9: EMERGENCY INFORMATION DASHBOARD ==========
+        // Assembles a single real-data summary view (flood detection,
+        // confidence, priority, every real infrastructure category this app
+        // fetches - including schools/power plants, which are computed
+        // server-side but not shown on the main Affected Area card - plus a
+        // snapshot of the actual map) from data already computed for the
+        // current search (currentSearchContext.summary/.impact) - never
+        // fetches anything new, and never fabricates a figure the rest of
+        // the app wouldn't also show honestly as "Not available"/"N/A".
+
+        function categoryCountLabel(categories, key, countField) {
+            const cat = categories && categories[key];
+            if (!cat) return 'N/A';
+            if (cat.status === 'ok') {
+                const value = cat[countField];
+                return (typeof value === 'number') ? (countField === 'intersecting_length_km' ? value.toFixed(2) : value) : 'N/A';
+            }
+            if (cat.status === 'no_features_found') return '0';
+            return 'N/A';
+        }
+
+        function buildEmergencyDashboardHtml(mapImageDataUrl) {
+            const ctx = currentSearchContext || {};
+            const summary = ctx.summary || {};
+            const impactWrapper = (ctx.impact && ctx.impact !== 'loading') ? ctx.impact : null;
+            const impact = (impactWrapper && impactWrapper.infrastructure_impact) || {};
+            const categories = impact.categories || {};
+            const priority = impactWrapper ? impactWrapper.priority : null;
+
+            const stats = summary.classification_statistics || {};
+            const totalKm2 = stats.total_flood_extent_area_km2 ?? 0;
+            const openWaterKm2 = stats.possible_flood_area_km2 ?? 0;
+            const vegetationKm2 = stats.possible_flooded_vegetation_area_km2 ?? 0;
+
+            const confidence = summary.detection_confidence ? Math.round(summary.detection_confidence.confidence) + '%' : 'N/A';
+            const beforeDate = formatSwipeDate(ctx.beforeDate) || 'Unknown';
+            const afterDate = formatSwipeDate(ctx.afterDate) || 'Unknown';
+            const generatedAt = new Date().toLocaleString();
+
+            const factorsHtml = (priority && priority.factors || []).map(f => `
+                <div class="emergency-factor">
+                    <span>${f.explanation}</span>
+                    <span class="emergency-factor-points">${f.points > 0 ? '+' : ''}${f.points} pts</span>
+                </div>
+            `).join('') || '<div class="emergency-factor"><span>Priority factors not yet available.</span></div>';
+
+            const limitationsHtml = (priority && priority.limitations || []).map(l => `<li>${l}</li>`).join('')
+                || '<li>Infrastructure impact has not finished computing yet for this search.</li>';
+
+            const mapHtml = mapImageDataUrl
+                ? `<img src="${mapImageDataUrl}" class="emergency-map-image" alt="Map of the analyzed area with the real detected flood extent" />`
+                : '<p class="emergency-limitations">Map snapshot unavailable.</p>';
+
+            return `
+                <h3>Area &amp; Acquisitions</h3>
+                <p class="emergency-meta">Location: ${ctx.locationText || 'Unknown'} &middot; Search radius: ${ctx.radiusKm || '-'} km</p>
+                <p class="emergency-meta">Before: ${beforeDate} &middot; After: ${afterDate} &middot; Report generated: ${generatedAt}</p>
+
+                <h3>Flood Detection (real, NISAR L-band backscatter)</h3>
+                <div class="emergency-stat-grid">
+                    <div class="emergency-stat"><div class="emergency-stat-label">Total Flood Extent</div><div class="emergency-stat-value">${totalKm2.toFixed(2)} km&sup2;</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Open Water</div><div class="emergency-stat-value">${openWaterKm2.toFixed(2)} km&sup2;</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Flooded Vegetation</div><div class="emergency-stat-value">${vegetationKm2.toFixed(2)} km&sup2;</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Detection Confidence</div><div class="emergency-stat-value">${confidence}</div></div>
+                </div>
+
+                <h3>Priority Assessment</h3>
+                <div class="emergency-stat-grid">
+                    <div class="emergency-stat"><div class="emergency-stat-label">Priority Level</div><div class="emergency-stat-value">${priority ? priority.level : 'Computing...'}</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Priority Score</div><div class="emergency-stat-value">${priority ? priority.score : '-'}</div></div>
+                </div>
+                ${factorsHtml}
+
+                <h3>Facilities &amp; Infrastructure (real, OpenStreetMap/Geoapify)</h3>
+                <div class="emergency-stat-grid">
+                    <div class="emergency-stat"><div class="emergency-stat-label">Hospitals</div><div class="emergency-stat-value">${categoryCountLabel(categories, 'hospitals', 'within_flood_count')}</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Schools</div><div class="emergency-stat-value">${categoryCountLabel(categories, 'schools', 'within_flood_count')}</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Settlements</div><div class="emergency-stat-value">${categoryCountLabel(categories, 'settlements', 'within_flood_count')}</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Power Plants</div><div class="emergency-stat-value">${categoryCountLabel(categories, 'power_plants', 'within_flood_count')}</div></div>
+                    <div class="emergency-stat"><div class="emergency-stat-label">Roads Affected</div><div class="emergency-stat-value">${categoryCountLabel(categories, 'roads', 'intersecting_length_km')} km</div></div>
+                </div>
+
+                <h3>Map</h3>
+                ${mapHtml}
+
+                <h3>Data Limitations (real, honestly reported)</h3>
+                <ul class="emergency-limitations">${limitationsHtml}</ul>
+            `;
+        }
+
+        async function openEmergencyDashboard() {
+            if (!currentSearchContext || !currentSearchContext.summary) {
+                alert('Run a search and wait for the real flood-detection results before opening Emergency Information.');
+                return;
+            }
+
+            const overlay = document.getElementById('emergencyOverlay');
+            const body = document.getElementById('emergencyBody');
+            body.innerHTML = buildEmergencyDashboardHtml(null);
+            overlay.style.display = 'flex';
+
+            // Snapshot the actual live map (real AOI circle + real detected
+            // flood/vegetation overlay) - captured after the dashboard is
+            // already visible so the map container has its final layout size.
+            try {
+                const mapEl = document.getElementById('map');
+                const canvas = await html2canvas(mapEl, { useCORS: true, logging: false });
+                body.innerHTML = buildEmergencyDashboardHtml(canvas.toDataURL('image/png'));
+            } catch (e) {
+                console.warn('Could not capture map snapshot for Emergency Information:', e);
+            }
+        }
+
+        function closeEmergencyDashboard() {
+            document.getElementById('emergencyOverlay').style.display = 'none';
+        }
+
+        // Captures the whole dashboard panel (already includes the real map
+        // snapshot as a plain <img>, so this second capture needs no CORS
+        // handling) and slices it across as many A4 pages as needed.
+        async function downloadEmergencyDashboardPdf() {
+            const panel = document.getElementById('emergencyBody');
+            const btn = document.getElementById('emergencyDownloadPdfBtn');
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            try {
+                const canvas = await html2canvas(panel, { useCORS: true, logging: false, backgroundColor: '#0f172a' });
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('p', 'mm', 'a4');
+                const pageWidth = doc.internal.pageSize.getWidth();
+                const pageHeight = doc.internal.pageSize.getHeight();
+                const imgWidthMm = pageWidth;
+                const imgHeightMm = (canvas.height * imgWidthMm) / canvas.width;
+
+                let heightLeftMm = imgHeightMm;
+                let positionMm = 0;
+                const imgData = canvas.toDataURL('image/png');
+
+                doc.text('VAMIKA Emergency Information', 10, 10);
+                doc.addImage(imgData, 'PNG', 0, 15, imgWidthMm, imgHeightMm);
+                heightLeftMm -= (pageHeight - 15);
+
+                while (heightLeftMm > 0) {
+                    positionMm -= pageHeight;
+                    doc.addPage();
+                    doc.addImage(imgData, 'PNG', 0, positionMm, imgWidthMm, imgHeightMm);
+                    heightLeftMm -= pageHeight;
+                }
+
+                const location = (currentSearchContext && currentSearchContext.locationText) || 'area';
+                doc.save(`VAMIKA_Emergency_Information_${location.replace(/[^a-z0-9]+/gi, '_')}.pdf`);
+            } catch (e) {
+                console.error('Could not generate Emergency Information PDF:', e);
+                alert(`Could not generate the PDF: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Download PDF';
+            }
         }
 
         // ========== PHASE 2B: INFRASTRUCTURE LAYERS ==========
@@ -3120,6 +3478,19 @@ ${placemarks}
                     tsCurrentIndex = (tsCurrentIndex + 1) % tsCurrentData.frame_count;
                     updateTimeSeriesFrame();
                 }, 800);
+            });
+
+            // Phase 9: Emergency Information dashboard open/close/PDF
+            document.getElementById('emergencyInfoBtn').addEventListener('click', openEmergencyDashboard);
+            document.getElementById('emergencyCloseBtn').addEventListener('click', closeEmergencyDashboard);
+            document.getElementById('emergencyDownloadPdfBtn').addEventListener('click', downloadEmergencyDashboardPdf);
+            document.getElementById('emergencyOverlay').addEventListener('click', (e) => {
+                if (e.target.id === 'emergencyOverlay') closeEmergencyDashboard();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && document.getElementById('emergencyOverlay').style.display !== 'none') {
+                    closeEmergencyDashboard();
+                }
             });
         });
     </script>
